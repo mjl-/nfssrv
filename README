@@ -1,0 +1,5 @@
+this is to become an nfs (version 3) server for inferno, in limbo.
+
+nfssrv.  registers with portmapper.  has built-in mountd.  no need to have it separate.  the mountd part will only have to implement the MNT call.  perhaps UNMNT too.  the rest are probably not needed.  there will be no lock manager (if there should be one in the future, it would probably also be part of nfssrv).
+
+separate portmapper, aka rpcbind.  with fs interface, for nfsd (and others) to register their program+version to their ports.

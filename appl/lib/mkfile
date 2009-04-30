@@ -1,0 +1,17 @@
+<../../mkconfig
+
+TARG=\
+	sunrpc.dis\
+	portmap.dis\
+
+MODULES=\
+	portmap.m\
+
+SYSMODULES=\
+	sys.m\
+	bufio.m\
+	sunrpc.m\
+
+DISBIN=$ROOT/dis/lib
+
+<$ROOT/mkfiles/mkdis
