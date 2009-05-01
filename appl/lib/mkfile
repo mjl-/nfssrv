@@ -3,9 +3,13 @@
 TARG=\
 	sunrpc.dis\
 	portmap.dis\
+	mntrpc.dis\
+#	nfsrpc.dis\
 
 MODULES=\
 	portmap.m\
+	mntrpc.m\
+	nfsrpc.m\
 
 SYSMODULES=\
 	sys.m\

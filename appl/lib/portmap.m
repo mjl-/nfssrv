@@ -5,6 +5,7 @@ Portmap: module
 	init:	fn();
 
 	ProgPortmap: con 10000;
+	VersPortmap: con 2;
 
 	Map: adt {
 		prog:	int;
@@ -13,7 +14,6 @@ Portmap: module
 		port:	int;
 	};
 
-	Mnull, Mset, Munset, Mgetport, Mdump, Mcallit: con iota;
 	Tportmap: adt {
 		r: ref Trpc;
 		pick {
@@ -30,7 +30,7 @@ Portmap: module
 			args:	array of byte;
 		}
 
-		unpack:	fn(m: ref Trpc, buf: array of byte): ref Tportmap raises (Badprog, Badprogversion, Badproc, Badprocargs);
+		unpack:	fn(m: ref Trpc, buf: array of byte): ref Tportmap raises (Badrpc, Badprog, Badproc, Badprocargs);
 	};
 
 	Rportmap: adt {
@@ -52,7 +52,4 @@ Portmap: module
 		size:	fn(m: self ref Rportmap): int;
 		pack:	fn(m: self ref Rportmap, buf: array of byte, o: int): int;
 	};
-
-	portmapread:	fn(fd: ref Sys->FD): ref Tportmap raises (IO, Parse, Badrpcversion, Badprog, Badprogversion, Badproc, Badprocargs);
-	portmapwrite:	fn(fd: ref Sys->FD, r: ref Rportmap): string;
 };

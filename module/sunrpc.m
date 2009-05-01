@@ -8,9 +8,9 @@ Sunrpc: module
 	Parse:	exception(string);
 	Badrpcversion:	exception;
 	Badprog:	exception;
-	Badprogversion:	exception;
 	Badproc:	exception;
 	Badprocargs:	exception;
+	Badrpc:		exception(ref Trpc, ref Rrpc);
 
 	MTcall, MTreply: con iota;
 	MSGaccepted, MSGdenied: con iota;
@@ -79,10 +79,22 @@ Sunrpc: module
 		pack:	fn(m: self ref Rrpc, buf: array of byte, o: int): int;
 	};
 
-	rpcwrite:	fn(fd: ref Sys->FD, r: ref Rrpc): string;
+	read:	fn[T](fd: ref Sys->FD, m: T): T
+		for {
+		T =>	unpack:	fn(m: ref Trpc, buf: array of byte): T raises (Badrpc, Badprog, Badproc, Badprocargs);
+		}
+		raises (IO, Parse, Badrpc);
+	write:	fn[T](fd: ref Sys->FD, m: T): string
+		for {
+		T =>	size:	fn(m: T): int;
+			pack:	fn(m: T, buf: array of byte, o: int): int;
+		};
 
-	p32:	fn(d: array of byte, o: int, v: int): int;
+	p32:		fn(d: array of byte, o: int, v: int): int;
 	popaque:	fn(d: array of byte, o: int, buf: array of byte): int;
-	g32:	fn(d: array of byte, o: int): (int, int) raises (Parse);
+	pstr:		fn(d: array of byte, o: int, s: string): int;
+
+	g32:		fn(d: array of byte, o: int): (int, int) raises (Parse);
 	gopaque:	fn(buf: array of byte, o: int, max: int): (array of byte, int) raises (Parse);
+	gstr:		fn(buf: array of byte, o: int, max: int): (string, int) raises (Parse);
 };

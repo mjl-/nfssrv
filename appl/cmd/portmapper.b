@@ -8,7 +8,8 @@ include "arg.m";
 include "sunrpc.m";
 	sunrpc: Sunrpc;
 	g32, gopaque, p32, popaque: import sunrpc;
-	IO, Parse, Badrpcversion, Badprog, Badprogversion, Badproc, Badprocargs: import sunrpc;
+	IO, Parse, Badrpc: import sunrpc;
+	Badprog, Badproc, Badprocargs: import sunrpc;
 	Trpc, Rrpc, Auth: import sunrpc;
 include "../lib/portmap.m";
 	portmap: Portmap;
@@ -91,11 +92,11 @@ transact(fd: ref Sys->FD): string
 	say("transact");
 	tt: ref Tportmap;
 	{
-		tt = portmap->portmapread(fd);
+		tt = sunrpc->read(fd, ref Tportmap.Null);
 	} exception e {
-	Badrpcversion =>
-		r := ref Rrpc.Rpcmismatch (tt.r.xid, 2, 2);
-		return sunrpc->rpcwrite(fd, r);
+	Badrpc =>
+		r := e.t1;
+		return sunrpc->write(fd, r);
 	IO =>
 		return "reading request: "+e;
 	Parse =>
@@ -125,12 +126,12 @@ transact(fd: ref Sys->FD): string
 		# xxx implement
 		r = ref Rportmap.Dump (rok, array[0] of Map);
 	Callit =>
-		return sunrpc->rpcwrite(fd, rbad);
+		return sunrpc->write(fd, rbad);
 	* =>
 		raise "internal error";
 	}
 	say("have portmap response");
-	return portmap->portmapwrite(fd, r);
+	return sunrpc->write(fd, r);
 }
 
 kill(pid: int)

@@ -11,16 +11,99 @@ init()
 }
 
 
-rpcwrite(fd: ref Sys->FD, r: ref Rrpc): string
+write[T](fd: ref Sys->FD, m: T): string
+	for {
+	T =>	size:   fn(m: T): int;
+		pack:	fn(m: T, buf: array of byte, o: int): int;
+	}
 {
-	size := r.size();
+	size := m.size(m);
 	buf := array[4+size] of byte;
 	o := 0;
 	o = p32(buf, o, (1<<31)|size);
-	o = r.pack(buf, o);
+	o = m.pack(m, buf, o);
 	if(sys->write(fd, buf, len buf) != len buf)
 		return sprint("write: %r");
 	return nil;
+}
+
+readmsg(fd: ref Sys->FD): array of byte raises (IO, Parse)
+{
+say("reading Trpc");
+	buf := array[0] of byte;
+	for(;;) {
+		sbuf := array[4] of byte;
+		if(sys->readn(fd, sbuf, len sbuf) != len sbuf)
+			raise IO("short read");
+		v := g32(sbuf, 0).t0;
+		end := v&(1<<31);
+		v &= ~end;
+		if(v > 64*1024)
+			raise Parse("message too long");
+say(sprint("Trpc, fragment, length %d, end %d", v, end));
+
+		nbuf := array[len buf+v] of byte;
+		nbuf[:] = buf;
+		if(sys->readn(fd, nbuf[len buf:], v) != v)
+			raise IO("short read");
+		buf = nbuf;
+
+		if(end)
+			break;
+	}
+say(sprint("Trpc, have request, length %d", len buf));
+	return buf;
+}
+
+read[T](fd: ref Sys->FD, m: T): T
+	for {
+	T =>	unpack: fn(m: ref Trpc, buf: array of byte): T raises (Badrpc, Badprog, Badproc, Badprocargs);
+	}
+	raises (IO, Parse, Badrpc)
+{
+	r := ref Trpc;
+	nullverf: Auth;
+	nullverf.which = Anone;
+	{
+		buf := readmsg(fd);
+
+		o := 0;
+		(r.xid, o) = g32(buf, o);
+		msgtype: int;
+		(msgtype, o) = g32(buf, o);
+		if(msgtype != MTcall)
+			raise Parse("message rpc response, expected rpc request");
+		(r.rpcvers, o) = g32(buf, o);
+		if(r.rpcvers != 2)
+			raise Badrpcversion();
+		(r.prog, o) = g32(buf, o);
+		(r.vers, o) = g32(buf, o);
+		(r.proc, o) = g32(buf, o);
+		(r.cred.which, o) = g32(buf, o);
+		(r.cred.buf, o) = gopaque(buf, o, Authmax);
+		(r.verf.which, o) = g32(buf, o);
+		(r.verf.buf, o) = gopaque(buf, o, Authmax);
+		return m.unpack(r, buf[o:]);
+	} exception e {
+	IO or
+	Parse =>
+		raise;
+	Badrpcversion =>
+		raise Badrpc (nil, ref Rrpc.Rpcmismatch (r.xid, 2, 2));
+
+	Badrpc =>
+		pick out := e.t1 {
+		Progmismatch =>
+			out.verf = nullverf;
+		}
+		raise;
+	Badprog =>
+		raise Badrpc (nil, ref Rrpc.Badprog (r.xid, nullverf));
+	Badproc =>
+		raise Badrpc (nil, ref Rrpc.Badproc (r.xid, nullverf));
+	Badprocargs =>
+		raise Badrpc (nil, ref Rrpc.Badprocargs (r.xid, nullverf));
+	}
 }
 
 
@@ -38,19 +121,7 @@ Auth.pack(a: self Auth, buf: array of byte, o: int): int
 
 Rrpc.size(mm: self ref Rrpc): int
 {
-	n := 4+4+4+4;
-	pick m := mm {
-	Success =>	n += m.verf.size();
-	Progmismatch =>	n += m.verf.size()+4+4;
-	Badprog or
-	Badproc or
-	Badprocargs or
-	Systemerr =>	n += m.verf.size();
-	Rpcmismatch =>	n += 4+4;
-	Autherror =>	n += 4;
-	* =>	raise "internal error";
-	}
-	return n;
+	return mm.pack(nil, 0);
 }
 
 Rrpc.pack(mm: self ref Rrpc, buf: array of byte, o: int): int
@@ -97,6 +168,8 @@ Rrpc.pack(mm: self ref Rrpc, buf: array of byte, o: int): int
 
 p32(d: array of byte, o: int, v: int): int
 {
+	if(d == nil)
+		return o+4;
 	d[o++] = byte (v>>24);
 	d[o++] = byte (v>>16);
 	d[o++] = byte (v>>8);
@@ -106,6 +179,19 @@ p32(d: array of byte, o: int, v: int): int
 
 popaque(d: array of byte, o: int, buf: array of byte): int
 {
+	if(d == nil)
+		return o+4+len buf;
+	o = p32(d, o, len buf);
+	d[o:] = buf;
+	o += len buf;
+	return o;
+}
+
+pstr(d: array of byte, o: int, s: string): int
+{
+	if(d == nil)
+		return o+4+len array of byte s;
+	buf := array of byte s;
 	o = p32(d, o, len buf);
 	d[o:] = buf;
 	o += len buf;
@@ -133,4 +219,20 @@ gopaque(buf: array of byte, o: int, max: int): (array of byte, int) raises (Pars
 	if(o+n > len buf)
 		raise Parse(sprint("short buffer, opaque length %d, have %d", n, len buf-o));
 	return (buf[o:o+n], o+n);
+}
+
+gstr(buf: array of byte, o: int, max: int): (string, int) raises (Parse)
+{
+	n: int;
+	(n, o) = g32(buf, o);
+	if(max >= 0 && n > max)
+		raise Parse(sprint("string larger than max allowed (%d > %d)", n, max));
+	if(o+n > len buf)
+		raise Parse(sprint("short buffer, string length %d, have %d", n, len buf-o));
+	return (string buf[o:o+n], o+n);
+}
+
+say(s: string)
+{
+	sys->fprint(sys->fildes(2), "%s\n", s);
 }
