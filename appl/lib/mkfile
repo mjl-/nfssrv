@@ -4,7 +4,7 @@ TARG=\
 	sunrpc.dis\
 	portmaprpc.dis\
 	mntrpc.dis\
-#	nfsrpc.dis\
+	nfsrpc.dis\
 
 MODULES=\
 	portmaprpc.m\

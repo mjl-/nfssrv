@@ -91,10 +91,13 @@ Sunrpc: module
 		};
 
 	p32:		fn(d: array of byte, o: int, v: int): int;
+	p64:		fn(d: array of byte, o: int, v: big): int;
 	popaque:	fn(d: array of byte, o: int, buf: array of byte): int;
 	pstr:		fn(d: array of byte, o: int, s: string): int;
+	pbool:		fn(d: array of byte, o: int, v: int): int;
 
 	g32:		fn(d: array of byte, o: int): (int, int) raises (Parse);
+	g64:		fn(d: array of byte, o: int): (big, int) raises (Parse);
 	gopaque:	fn(buf: array of byte, o: int, max: int): (array of byte, int) raises (Parse);
 	gstr:		fn(buf: array of byte, o: int, max: int): (string, int) raises (Parse);
 };

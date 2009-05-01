@@ -165,11 +165,32 @@ Rrpc.pack(mm: self ref Rrpc, buf: array of byte, o: int): int
 	return o;
 }
 
+pbool(d: array of byte, o: int, v: int): int
+{
+	if(v)
+		v = 1;
+	return p32(d, o, v);
+}
 
 p32(d: array of byte, o: int, v: int): int
 {
 	if(d == nil)
 		return o+4;
+	d[o++] = byte (v>>24);
+	d[o++] = byte (v>>16);
+	d[o++] = byte (v>>8);
+	d[o++] = byte (v>>0);
+	return o;
+}
+
+p64(d: array of byte, o: int, v: big): int
+{
+	if(d == nil)
+		return o+8;
+	d[o++] = byte (v>>56);
+	d[o++] = byte (v>>48);
+	d[o++] = byte (v>>40);
+	d[o++] = byte (v>>32);
 	d[o++] = byte (v>>24);
 	d[o++] = byte (v>>16);
 	d[o++] = byte (v>>8);
@@ -207,6 +228,22 @@ g32(d: array of byte, o: int): (int, int) raises (Parse)
 	v |= int d[o++]<<16;
 	v |= int d[o++]<<8;
 	v |= int d[o++]<<0;
+	return (v, o);
+}
+
+g64(d: array of byte, o: int): (big, int) raises (Parse)
+{
+	if(o+8 > len d)
+		raise Parse("short buffer");
+	v := big 0;
+	v |= big d[o++]<<56;
+	v |= big d[o++]<<48;
+	v |= big d[o++]<<40;
+	v |= big d[o++]<<32;
+	v |= big d[o++]<<24;
+	v |= big d[o++]<<16;
+	v |= big d[o++]<<8;
+	v |= big d[o++]<<0;
 	return (v, o);
 }
 

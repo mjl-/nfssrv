@@ -2,9 +2,12 @@
 
 TARG=\
 	portmapper.dis\
+	nfssrv.dis\
 
 MODULES=\
 	../lib/portmaprpc.m\
+	../lib/mntrpc.m\
+	../lib/nfsrpc.m\
 
 SYSMODULES=\
 	sunrpc.m\
