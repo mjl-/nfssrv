@@ -11,9 +11,9 @@ include "sunrpc.m";
 	IO, Parse, Badrpc: import sunrpc;
 	Badprog, Badproc, Badprocargs: import sunrpc;
 	Trpc, Rrpc, Auth: import sunrpc;
-include "../lib/portmap.m";
-	portmap: Portmap;
-	Tportmap, Rportmap, Map: import portmap;
+include "../lib/portmaprpc.m";
+	portmaprpc: Portmaprpc;
+	Tportmap, Rportmap, Map: import portmaprpc;
 
 Portmapper: module {
 	init:	fn(nil: ref Draw->Context, args: list of string);
@@ -28,8 +28,8 @@ init(nil: ref Draw->Context, args: list of string)
 	arg := load Arg Arg->PATH;
 	sunrpc = load Sunrpc Sunrpc->PATH;
 	sunrpc->init();
-	portmap = load Portmap Portmap->PATH;
-	portmap->init();
+	portmaprpc = load Portmaprpc Portmaprpc->PATH;
+	portmaprpc->init();
 
 	arg->init(args);
 	arg->setusage(arg->progname()+" [-d] [addr]");

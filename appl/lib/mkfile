@@ -2,12 +2,12 @@
 
 TARG=\
 	sunrpc.dis\
-	portmap.dis\
+	portmaprpc.dis\
 	mntrpc.dis\
 #	nfsrpc.dis\
 
 MODULES=\
-	portmap.m\
+	portmaprpc.m\
 	mntrpc.m\
 	nfsrpc.m\
 

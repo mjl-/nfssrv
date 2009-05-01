@@ -1,4 +1,4 @@
-implement Portmap;
+implement Portmaprpc;
 
 include "sys.m";
 include "sunrpc.m";
@@ -6,7 +6,7 @@ include "sunrpc.m";
 	g32, gopaque, gstr, p32, popaque, pstr: import sunrpc;
 	Parse, Badprog, Badproc, Badprocargs, Badrpc: import sunrpc;
 	Trpc, Rrpc, Auth: import sunrpc;
-include "portmap.m";
+include "portmaprpc.m";
 
 Mnull, Mset, Munset, Mgetport, Mdump, Mcallit: con iota;
 

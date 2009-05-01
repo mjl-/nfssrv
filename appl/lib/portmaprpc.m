@@ -1,6 +1,6 @@
-Portmap: module
+Portmaprpc: module
 {
-	PATH:	con "/dis/lib/portmap.dis";
+	PATH:	con "/dis/lib/portmaprpc.dis";
 
 	init:	fn();
 

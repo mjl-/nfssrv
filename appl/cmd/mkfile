@@ -3,7 +3,11 @@
 TARG=\
 	portmapper.dis\
 
+MODULES=\
+	../lib/portmaprpc.m\
+
 SYSMODULES=\
+	sunrpc.m\
 	arg.m\
 	bufio.m\
 	daytime.m\
