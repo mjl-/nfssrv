@@ -4,13 +4,12 @@ Sunrpc: module
 
 	init:	fn();
 
-	IO:	exception(string);
 	Parse:	exception(string);
 	Badrpcversion:	exception;
 	Badprog:	exception;
 	Badproc:	exception;
-	Badprocargs:	exception;
-	Badrpc:		exception(ref Trpc, ref Rrpc);
+	Badprocargs:	exception(string);
+	Badrpc:		exception(string, ref Trpc, ref Rrpc);
 
 	MTcall, MTreply: con iota;
 	MSGaccepted, MSGdenied: con iota;
@@ -79,12 +78,13 @@ Sunrpc: module
 		pack:	fn(m: self ref Rrpc, buf: array of byte, o: int): int;
 	};
 
-	read:	fn[T](fd: ref Sys->FD, m: T): T
+	readmsg:	fn(fd: ref Sys->FD): (array of byte, string);
+	parsereq:	fn[T](buf: array of byte, m: T): T
 		for {
 		T =>	unpack:	fn(m: ref Trpc, buf: array of byte): T raises (Badrpc, Badprog, Badproc, Badprocargs);
 		}
-		raises (IO, Parse, Badrpc);
-	write:	fn[T](fd: ref Sys->FD, m: T): string
+		raises (Parse, Badrpc);
+	writeresp:	fn[T](fd: ref Sys->FD, pre: array of byte, wrapmsg: int, m: T): string
 		for {
 		T =>	size:	fn(m: T): int;
 			pack:	fn(m: T, buf: array of byte, o: int): int;

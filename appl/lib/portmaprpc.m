@@ -4,7 +4,7 @@ Portmaprpc: module
 
 	init:	fn();
 
-	ProgPortmap: con 10000;
+	ProgPortmap: con 100000;
 	VersPortmap: con 2;
 
 	Map: adt {

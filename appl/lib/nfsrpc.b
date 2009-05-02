@@ -1,6 +1,8 @@
 implement Nfsrpc;
 
 include "sys.m";
+	sys: Sys;
+	sprint: import sys;
 include "sunrpc.m";
 	sunrpc: Sunrpc;
 	g32, g64, gopaque, gstr, pbool, p32, p64, popaque, pstr: import sunrpc;
@@ -34,6 +36,7 @@ Mcommit: con iota;
 
 init()
 {
+	sys = load Sys Sys->PATH;
 	sunrpc = load Sunrpc Sunrpc->PATH;
 	sunrpc->init();
 }
@@ -44,7 +47,7 @@ Tnfs.unpack(m: ref Trpc, buf: array of byte): ref Tnfs raises (Badrpc, Badprog, 
 		raise Badprog;
 	if(m.vers != VersNfs) {
 		nullverf: Auth; # will be fixed by caller
-		raise Badrpc(nil, ref Rrpc.Progmismatch (m.xid, nullverf, VersNfs, VersNfs));
+		raise Badrpc(sprint("bad version %d", m.vers), nil, ref Rrpc.Progmismatch (m.xid, nullverf, VersNfs, VersNfs));
 	}
 
 	{
@@ -174,17 +177,57 @@ Tnfs.unpack(m: ref Trpc, buf: array of byte): ref Tnfs raises (Badrpc, Badprog, 
 			raise Badproc;
 		}
 		if(o != len buf)
-			raise Badprocargs;
+			raise Badprocargs(sprint("leftover bytes, o %d != len buf %d", o, len buf));
 		tt.r = m;
 		return tt;
-	} exception {
+	} exception e {
 	Parse =>
-		raise Badprocargs();
+		raise Badprocargs(e);
 	Badproc =>
 		raise;
 	Badprocargs =>
 		raise;
 	}
+}
+
+wheretext(d: Dirargs): string
+{
+	return sprint("fh %s name %q", hex(d.fh), d.name);
+}
+
+tnfstagnames := array[] of {
+"Null", "Getattr", "Setattr", "Lookup", "Access", "Readlink", "Read", "Write",
+"Create", "Mkdir", "Symlink", "Mknod", "Remove", "Rmdir", "Rename", "Link",
+"Readdir", "Readdirplus", "Fsstat", "Fsinfo", "Pathconf", "Commit",
+};
+Tnfs.text(mm: self ref Tnfs): string
+{
+	s := sprint("Tnfs.%s(", tnfstagnames[tagof mm]);
+	pick m := mm {
+	Getattr =>	s += "fh "+hex(m.fh);
+	Setattr =>	s += "fh "+hex(m.fh);
+	Lookup =>	s += wheretext(m.where);
+	Access =>	s += "fh "+hex(m.fh);
+	Readlink =>	s += "fh "+hex(m.fh);
+	Read =>		s += "fh "+hex(m.fh)+sprint(" offset %bd count %d", m.offset, m.count);
+	Write =>	s += "fh "+hex(m.fh)+sprint(" offset %bd count %d", m.offset, m.count);
+	Create =>	s += wheretext(m.where);
+	Mkdir =>	s += wheretext(m.where);
+	Symlink =>	s += wheretext(m.where)+sprint(" path %q", m.path);
+	Mknod =>	s += wheretext(m.where);
+	Remove =>	s += wheretext(m.where);
+	Rmdir =>	s += wheretext(m.where);
+	Rename =>	s += "old "+wheretext(m.owhere)+" new "+wheretext(m.nwhere);
+	Link =>		s += "fh "+hex(m.fh)+" "+wheretext(m.link);
+	Readdir =>	s += "fh "+hex(m.fh)+sprint(" count %d", m.count);
+	Readdirplus =>	s += "fh "+hex(m.fh)+sprint(" dircount %d maxcount %d",m.dircount, m.maxcount);
+	Fsstat =>	s += "fh "+hex(m.rootfh);
+	Fsinfo =>	s += "fh "+hex(m.rootfh);
+	Pathconf =>	s += "fh "+hex(m.fh);
+	Commit =>	s += "fh "+hex(m.fh)+sprint(" offset %bd count %d", m.offset, m.count);;
+	}
+	s += ")";
+	return s;
 }
 
 Rnfs.size(mm: self ref Rnfs): int
@@ -461,8 +504,8 @@ gsattr(buf: array of byte, o: int): (Sattr, int) raises Parse
 		(a.setmtime, o)	= g32(buf, o);
 		(a.mtime, o)	= g32(buf, o);
 		return (a, o);
-	} exception {
-	Parse => raise;
+	} exception e {
+	Parse => raise Parse("gsattr: "+e);
 	}
 }
 
@@ -473,8 +516,8 @@ gdirargs(buf: array of byte, o: int): (Dirargs, int) raises Parse
 		(d.fh, o) = gfilehandle(buf, o);
 		(d.name, o) = gstr(buf, o, -1); # xxx no max?
 		return (d, o);
-	} exception {
-	Parse => raise;
+	} exception e {
+	Parse => raise Parse("gdirargs: "+e);
 	}
 }
 
@@ -482,7 +525,15 @@ gfilehandle(buf: array of byte, o: int): (array of byte, int) raises Parse
 {
 	{
 		return gopaque(buf, o, Filehandlesizemax);
-	} exception {
-	Parse => raise;
+	} exception e {
+	Parse => raise Parse("gfilehandle: "+e);
 	}
+}
+
+hex(d: array of byte): string
+{
+	s := "";
+	for(i := 0; i < len d; i++)
+		s += sprint("%02x", int d[i]);
+	return s;
 }

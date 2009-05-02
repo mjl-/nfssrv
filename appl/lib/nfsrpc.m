@@ -4,7 +4,7 @@ Nfsrpc: module
 
 	init:	fn();
 
-	ProgNfs: con 10003;
+	ProgNfs: con 100003;
 	VersNfs: con 3;
 
 	Eok:		con 0;
@@ -192,6 +192,7 @@ Nfsrpc: module
 		}
 
 		unpack:	fn(m: ref Trpc, buf: array of byte): ref Tnfs raises (Badrpc, Badprog, Badproc, Badprocargs);
+		text:	fn(m: self ref Tnfs): string;
 	};
 
 	Rgetattr: adt {

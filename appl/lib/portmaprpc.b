@@ -1,6 +1,8 @@
 implement Portmaprpc;
 
 include "sys.m";
+	sys: Sys;
+	sprint: import sys;
 include "sunrpc.m";
 	sunrpc: Sunrpc;
 	g32, gopaque, gstr, p32, popaque, pstr: import sunrpc;
@@ -12,6 +14,7 @@ Mnull, Mset, Munset, Mgetport, Mdump, Mcallit: con iota;
 
 init()
 {
+	sys = load Sys Sys->PATH;
 	sunrpc = load Sunrpc Sunrpc->PATH;
 	sunrpc->init();
 }
@@ -22,7 +25,7 @@ Tportmap.unpack(m: ref Trpc, buf: array of byte): ref Tportmap raises (Badrpc, B
 		raise Badprog;
 	if(m.vers != VersPortmap) {
 		nullverf: Auth;  # is corrected by caller
-		raise Badrpc (nil, ref Rrpc.Progmismatch (m.xid, nullverf, VersPortmap, VersPortmap));
+		raise Badrpc (sprint("bad version %d", m.vers), nil, ref Rrpc.Progmismatch (m.xid, nullverf, VersPortmap, VersPortmap));
 	}
 
 	{
@@ -45,7 +48,7 @@ Tportmap.unpack(m: ref Trpc, buf: array of byte): ref Tportmap raises (Badrpc, B
 			Mgetport =>	tt = ref Tportmap.Getport (m, map);
 			}
 		Mdump =>
-			;
+			tt = ref Tportmap.Dump (m);
 		Mcallit =>
 			tt = t := ref Tportmap.Callit;
 			t.r = m;
@@ -57,11 +60,11 @@ Tportmap.unpack(m: ref Trpc, buf: array of byte): ref Tportmap raises (Badrpc, B
 			raise Badproc;
 		}
 		if(o != len buf)
-			raise Badprocargs;
+			raise Badprocargs(sprint("leftover bytes, o %d < len buf %d", o, len buf));;
 		return tt;
-	} exception {
+	} exception e {
 	Parse =>
-		raise Badprocargs();
+		raise Badprocargs(e);
 	Badproc =>
 		raise;
 	Badprocargs =>
@@ -86,11 +89,13 @@ Rportmap.pack(mm: self ref Rportmap, buf: array of byte, o: int): int
 		o = p32(buf, o, m.port);
 	Dump =>
 		for(i := 0; i < len m.maps; i++) {
+			o = p32(buf, o, 1);
 			o = p32(buf, o, m.maps[i].prog);
 			o = p32(buf, o, m.maps[i].vers);
 			o = p32(buf, o, m.maps[i].prot);
 			o = p32(buf, o, m.maps[i].port);
 		}
+			o = p32(buf, o, 0);
 	Callit =>
 		o = p32(buf, o, m.port);
 		o = popaque(buf, o, m.res);

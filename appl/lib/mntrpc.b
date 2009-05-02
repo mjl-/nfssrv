@@ -1,6 +1,8 @@
 implement Mntrpc;
 
 include "sys.m";
+	sys: Sys;
+	sprint: import sys;
 include "sunrpc.m";
 	sunrpc: Sunrpc;
 	g32, gopaque, gstr, p32, popaque, pstr: import sunrpc;
@@ -11,6 +13,7 @@ include "mntrpc.m";
 
 init()
 {
+	sys = load Sys Sys->PATH;
 	sunrpc = load Sunrpc Sunrpc->PATH;
 	sunrpc->init();
 }
@@ -21,7 +24,7 @@ Tmnt.unpack(m: ref Trpc, buf: array of byte): ref Tmnt raises (Badrpc, Badprog, 
 		raise Badprog;
 	if(m.vers != VersMnt) {
 		nullverf: Auth; # will be fixed by caller
-		raise Badrpc(nil, ref Rrpc.Progmismatch (m.xid, nullverf, VersMnt, VersMnt));
+		raise Badrpc(sprint("bad version %d", m.vers), nil, ref Rrpc.Progmismatch (m.xid, nullverf, VersMnt, VersMnt));
 	}
 
 	{
@@ -48,11 +51,11 @@ Tmnt.unpack(m: ref Trpc, buf: array of byte): ref Tmnt raises (Badrpc, Badprog, 
 			raise Badproc;
 		}
 		if(o != len buf)
-			raise Badprocargs;
+			raise Badprocargs(sprint("leftover bytes, o %d != len buf %d", o, len buf));
 		return tt;
-	} exception {
+	} exception e {
 	Parse =>
-		raise Badprocargs();
+		raise Badprocargs(e);
 	Badproc =>
 		raise;
 	Badprocargs =>
@@ -73,7 +76,7 @@ Rmnt.pack(mm: self ref Rmnt, buf: array of byte, o: int): int
 		;
 	Mnt =>
 		o = p32(buf, o, m.status);
-		if(m.status == MNT3ok) {
+		if(m.status == Eok) {
 			o = popaque(buf, o, m.fh);
 			o = p32(buf, o, len m.auths);
 			for(i := 0; i < len m.auths; i++)

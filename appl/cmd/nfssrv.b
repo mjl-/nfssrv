@@ -8,12 +8,17 @@ include "arg.m";
 include "sunrpc.m";
 	sunrpc: Sunrpc;
 	g32, gopaque, p32, popaque: import sunrpc;
-	IO, Parse, Badrpc: import sunrpc;
+	Parse, Badrpc: import sunrpc;
 	Badrpcversion, Badprog, Badproc, Badprocargs: import sunrpc;
 	Trpc, Rrpc, Auth: import sunrpc;
 include "../lib/mntrpc.m";
 	mntrpc: Mntrpc;
 	Tmnt, Rmnt: import mntrpc;
+include "../lib/nfsrpc.m";
+	nfsrpc: Nfsrpc;
+	Tnfs, Rnfs: import nfsrpc;
+	Attr, Sattr, Time, Specdata, Weakattr, Weakdata, Dirargs, Nod, Entry, Entryplus: import nfsrpc;
+	Rgetattr, Rlookup, Raccess, Rreadlink, Rread, Rwrite, Rchange, Rreaddir, Rreaddirplus, Rfsstat, Rfsinfo, Rpathconf, Rcommit: import nfsrpc;
 
 Nfssrv: module {
 	init:	fn(nil: ref Draw->Context, args: list of string);
@@ -33,6 +38,8 @@ init(nil: ref Draw->Context, args: list of string)
 	sunrpc->init();
 	mntrpc = load Mntrpc Mntrpc->PATH;
 	mntrpc->init();
+	nfsrpc = load Nfsrpc Nfsrpc->PATH;
+	nfsrpc->init();
 
 	arg->init(args);
 	arg->setusage(arg->progname()+" [-d] [-n nfsport] [-m mntport]");
@@ -47,26 +54,26 @@ init(nil: ref Draw->Context, args: list of string)
 	if(args != nil)
 		arg->usage();
 
+	sys->pctl(Sys->NEWPGRP, nil);
+
 	regfd = sys->open("/chan/portmapper", Sys->OWRITE);
 	if(regfd == nil)
 		failall(sprint("open /chan/portmapper: %r"));
-	if(sys->fprint(regfd, "add %d %d tcp %d\n", Mntrpc->ProgMnt, Mntrpc->VersMnt, mntport) < 0)
+	if(sys->fprint(regfd, "add %d %d tcp %d\n", mntrpc->ProgMnt, mntrpc->VersMnt, mntport) < 0)
 		failall(sprint("registering mnt: %r"));
+	if(sys->fprint(regfd, "add %d %d tcp %d\n", nfsrpc->ProgNfs, nfsrpc->VersNfs, nfsport) < 0)
+		failall(sprint("registering nfs: %r"));
 
-	spawn nfslisten();
-	spawn mntlisten();
+	spawn listen(nfsport, nfssrv);
+	spawn listen(mntport, mntsrv);
 }
 
-nfslisten()
+listen(port: int, srv: ref fn(fd: ref Sys->FD))
 {
-}
-
-mntlisten()
-{
-	mntaddr := sprint("net!*!%d", mntport);
-	(ok, aconn) := sys->announce(mntaddr);
+	addr := sprint("net!*!%d", port);
+	(ok, aconn) := sys->announce(addr);
 	if(ok < 0)
-		failall(sprint("announce %q: %r", mntaddr));
+		failall(sprint("announce %q: %r", addr));
 	say("announced");
 	for(;;) {
 		(lok, lconn) := sys->listen(aconn);
@@ -80,7 +87,7 @@ mntlisten()
 			continue;
 		}
 		say("new connection");
-		spawn mntsrv(fd);
+		spawn srv(fd);
 		lconn.cfd = fd = nil;
 	}
 }
@@ -97,7 +104,9 @@ mntsrv(fd: ref Sys->FD)
 	spawn alarm(sys->pctl(0, nil), pidc := chan of int);
 	apid := <-pidc;
 	for(;;) {
-		err := mnttransact(fd);
+		(buf, err) := sunrpc->readmsg(fd);
+		if(err == nil)
+			err = mnttransact(buf, nil, fd);
 		if(err != nil) {
 			warn(err);
 			break;
@@ -106,18 +115,17 @@ mntsrv(fd: ref Sys->FD)
 	kill(apid);
 }
 
-mnttransact(fd: ref Sys->FD): string
+mnttransact(buf, pre: array of byte, fd: ref Sys->FD): string
 {
 	say("mnttransact");
 	tt: ref Tmnt;
 	{
-		tt = sunrpc->read(fd, ref Tmnt.Null);
+		tt = sunrpc->parsereq(buf, ref Tmnt.Null);
 	} exception e {
 	Badrpc =>
-		r := e.t1;
-		return sunrpc->write(fd, r);
-	IO =>
-		return "reading request: "+e;
+		r := e.t2;
+		warn("mnt, badrpc: "+e.t0);
+		return sunrpc->writeresp(fd, pre, pre==nil, r);
 	Parse =>
 		return "parsing request: "+e;
 	}
@@ -131,22 +139,120 @@ mnttransact(fd: ref Sys->FD): string
 	rbad := ref Rrpc.Systemerr (tt.r.xid, nullauth);
 	pick t := tt {
 	Null =>
+		say("mnt, null");
 		r = ref Rmnt.Null (rok);
 	Mnt =>
-		r = ref Rmnt.Mnt (rok, Mntrpc->MNT3perm, nil, nil);
+		say("mnt, mnt eperm");
+		fh := array of byte "test";
+		auths := array[] of {sunrpc->Anone, sunrpc->Asys};
+		r = ref Rmnt.Mnt (rok, Mntrpc->Eok, fh, auths);
 	Dump =>
+		say("mnt, dump");
 		r = ref Rmnt.Dump (rok, nil);
 	Umnt =>
+		say("mnt, umnt");
 		r = ref Rmnt.Umnt (rok);
 	Umntall =>
+		say("mnt, umntall");
 		r = ref Rmnt.Umntall (rok);
 	Export =>
+		say("mnt, export");
 		r = ref Rmnt.Export (rok, nil);
 	* =>
 		raise "internal error";
 	}
 	say("have mnt response");
-	return sunrpc->write(fd, r);
+	return sunrpc->writeresp(fd, pre, pre==nil, r);
+}
+
+
+nfssrv(fd: ref Sys->FD)
+{
+	for(;;) {
+		(buf, err) := sunrpc->readmsg(fd);
+		if(err == nil)
+			err = nfstransact(buf, nil, fd);
+		if(err != nil)
+			return warn(err);
+	}
+}
+
+nfstransact(buf, pre: array of byte, fd: ref Sys->FD): string
+{
+	say("nfstransact");
+	tt: ref Tnfs;
+	{
+		tt = sunrpc->parsereq(buf, ref Tnfs.Null);
+	} exception e {
+	Badrpc =>
+		r := e.t2;
+		warn("nfs, bad rpc: "+e.t0);
+		return sunrpc->writeresp(fd, pre, pre==nil, r);
+	Parse =>
+		return "parsing request: "+e;
+	}
+
+	say("nfs request: "+tt.text());
+
+	rr: ref Rnfs;
+	nullauth: Auth;
+	nullauth.which = sunrpc->Anone;
+	rok := ref Rrpc.Success  (tt.r.xid, nullauth);
+	rbad := ref Rrpc.Systemerr (tt.r.xid, nullauth);
+	pick t := tt {
+	Null =>
+		rr = ref Rnfs.Null;
+	Getattr =>
+		rr = r := ref Rnfs.Getattr;
+		a: Attr;
+		a.ftype = nfsrpc->FTdir;
+		a.mode = 8r755;
+		a.nlink = 1;
+		a.uid = a.gid = 0;
+		a.size = a.used = big 0;
+		a.rdev.major = 0;
+		a.rdev.minor = 0;
+		a.fsid = big 1;
+		a.fileid = big 1;
+		a.atime = a.mtime = a.ctime = 0;
+		r.r = ref Rgetattr.Ok (a);
+	Fsstat =>
+		rr = r := ref Rnfs.Fsstat;
+		r.r = e := ref Rfsstat.Ok;
+		e.attr = nil;
+		e.tbytes = big 0;  # total
+		e.fbytes = big 0;  # free
+		e.abytes = big 0;  # available to user
+		e.tfiles = big 0;
+		e.ffiles = big 0;
+		e.afiles = big 0;
+		e.invarsec = 0;
+	Fsinfo =>
+		rr = r := ref Rnfs.Fsinfo;
+		r.r = e := ref Rfsinfo.Ok;
+		e.attr = nil;
+		e.rtmax = Sys->ATOMICIO;
+		e.rtpref = Sys->ATOMICIO;
+		e.rtmult = 8;
+		e.wtmax = Sys->ATOMICIO;
+		e.wtpref = Sys->ATOMICIO;
+		e.wtmult = 8;
+		e.dtpref = 128;
+		e.maxfilesize = big 1<<63;
+		e.timedelta.secs = 1;
+		e.timedelta.nsecs = 0;
+		FSFlink:	con 1<<0;
+		FSFsymlink:	con 1<<1;
+		FSFhomogeneous:	con 1<<3;
+		FSFcansettime:	con 1<<4;
+		e.props = FSFhomogeneous|FSFcansettime;
+	* =>
+		return sunrpc->writeresp(fd, pre, pre==nil, rbad);
+		#raise "internal error";
+	}
+	rr.m = rok;
+	say("have mnt response");
+	return sunrpc->writeresp(fd, pre, pre==nil, rr);
 }
 
 

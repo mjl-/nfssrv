@@ -10,7 +10,7 @@ include "string.m";
 include "sunrpc.m";
 	sunrpc: Sunrpc;
 	g32, gopaque, p32, popaque: import sunrpc;
-	IO, Parse, Badrpc: import sunrpc;
+	Parse, Badrpc: import sunrpc;
 	Badprog, Badproc, Badprocargs: import sunrpc;
 	Trpc, Rrpc, Auth: import sunrpc;
 include "../lib/portmaprpc.m";
@@ -22,7 +22,8 @@ Portmapper: module {
 };
 
 dflag: int;
-addr := "net!*!sunrpc";
+tcpaddr := "tcp!*!sunrpc";
+udpaddr := "udp!*!sunrpc";
 
 ProtTcp:	con 6;
 ProtUdp:	con 17;
@@ -50,18 +51,17 @@ init(nil: ref Draw->Context, args: list of string)
 	portmaprpc->init();
 
 	arg->init(args);
-	arg->setusage(arg->progname()+" [-d] [addr]");
+	arg->setusage(arg->progname()+" [-d] [-t tcpaddr] [-u udpaddr]");
 	while((c := arg->opt()) != 0)
 		case c {
 		'd' =>	dflag++;
+		't' =>	tcpaddr = arg->earg();
+		'u' =>	udpaddr = arg->earg();
 		* =>	arg->usage();
 		}
 	args = arg->argv();
-	case len args {
-	0 =>	;
-	1 =>	addr = hd args;
-	* =>	arg->usage();
-	}
+	if(args != nil)
+		arg->usage();
 
 	regio := sys->file2chan("/chan", "portmapper");
 	if(regio == nil)
@@ -74,7 +74,8 @@ init(nil: ref Draw->Context, args: list of string)
 	dumpmapc = chan of chan of array of Map;
 
 	spawn register(regio);
-	spawn listen();
+	spawn listen(tcpaddr);
+	spawn listenudp(udpaddr);
 	main();
 }
 
@@ -190,12 +191,12 @@ register(fio: ref Sys->FileIO)
 }
 
 	
-listen()
+listen(addr: string)
 {
 	(ok, aconn) := sys->announce(addr);
 	if(ok < 0)
 		fail(sprint("announce %q: %r", addr));
-	say("announced");
+	say("announced tcp");
 	for(;;) {
 		(lok, lconn) := sys->listen(aconn);
 		if(lok < 0) {
@@ -213,6 +214,30 @@ listen()
 	}
 }
 
+listenudp(addr: string)
+{
+	(ok, aconn) := sys->announce(addr);
+	if(ok < 0)
+		fail(sprint("announce %q: %r", addr));
+	if(sys->fprint(aconn.cfd, "headers") < 0)
+		fail(sprint("udp ctl 'headers': %r"));
+	fd := sys->open(aconn.dir+"/data", Sys->ORDWR);
+	if(fd == nil)
+		fail(sprint("udp data: %r"));
+	say("announced udp");
+	buf := array[52+64*1024] of byte;
+	for(;;) {
+		n := sys->read(fd, buf, len buf);
+		if(n < 0)
+			fail(sprint("udp read: %r"));
+		if(n < 52)
+			fail(sprint("short udp read, length %d < 52", n));
+		err := transact(buf[52:n], buf[:52], fd);
+		if(err != nil)
+			warn(err);
+	}
+}
+
 alarm(pid: int, pidc: chan of int)
 {
 	pidc <-= sys->pctl(0, nil);
@@ -225,7 +250,9 @@ srv(fd: ref Sys->FD)
 	spawn alarm(sys->pctl(0, nil), pidc := chan of int);
 	apid := <-pidc;
 	for(;;) {
-		err := transact(fd);
+		(buf, err) := sunrpc->readmsg(fd);
+		if(err == nil)
+			err = transact(buf, nil, fd);
 		if(err != nil) {
 			warn(err);
 			break;
@@ -234,23 +261,22 @@ srv(fd: ref Sys->FD)
 	kill(apid);
 }
 
-transact(fd: ref Sys->FD): string
+transact(buf, pre: array of byte, fd: ref Sys->FD): string
 {
 	say("transact");
 	tt: ref Tportmap;
 	{
-		tt = sunrpc->read(fd, ref Tportmap.Null);
+		tt = sunrpc->parsereq(buf, ref Tportmap.Null);
 	} exception e {
 	Badrpc =>
-		r := e.t1;
-		return sunrpc->write(fd, r);
-	IO =>
-		return "reading request: "+e;
+		r := e.t2;
+		warn("portmap, bad rpc: "+e.t0);
+		return sunrpc->writeresp(fd, pre, pre==nil, r);
 	Parse =>
 		return "parsing request: "+e;
 	}
 
-	say("have portmap request");
+	say(sprint("have portmap request, tag %d", tagof tt));
 
 	r: ref Rportmap;
 	nullauth: Auth;
@@ -259,10 +285,12 @@ transact(fd: ref Sys->FD): string
 	rbad := ref Rrpc.Systemerr (tt.r.xid, nullauth);
 	pick t := tt {
 	Null =>
+		say("null");
 		r = ref Rportmap.Null (rok);
 	Set =>
 		addregc <-= (ref Reg (t.map, -1), errc := chan of string);
 		err := <-errc;
+		say(sprint("set, %d,%d,%d -> err %q", t.map.prog, t.map.vers, t.map.prot, err));
 		r = ref Rportmap.Set (rok, 1);
 		if(err != nil) {
 			warn("portmap rpc set: "+err);
@@ -273,22 +301,26 @@ transact(fd: ref Sys->FD): string
 		ok := <-okc;
 		if(ok)
 			ok = 1;
+		say(sprint("unset, %d,%d -> ok %d", t.map.prog, t.map.vers, ok));
 		r = ref Rportmap.Unset (rok, ok);
 	Getport =>
 		findmapc <-= (t.map, portc := chan of int);
 		port := <-portc;
+		say(sprint("getport, %d,%d,%d -> %d", t.map.prog, t.map.vers, t.map.prot, port));
 		r = ref Rportmap.Getport (rok, port);
 	Dump =>
 		dumpmapc <-= mapc := chan of array of Map;
 		maps := <-mapc;
+		say(sprint("dump, len maps %d", len maps));
 		r = ref Rportmap.Dump (rok, maps);
 	Callit =>
-		return sunrpc->write(fd, rbad);
+		say("callit (not implemented)");
+		return sunrpc->writeresp(fd, pre, pre==nil, rbad);
 	* =>
 		raise "internal error";
 	}
 	say("have portmap response");
-	return sunrpc->write(fd, r);
+	return sunrpc->writeresp(fd, pre, pre==nil, r);
 }
 
 kill(pid: int)

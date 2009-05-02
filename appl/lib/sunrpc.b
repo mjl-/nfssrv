@@ -11,62 +11,70 @@ init()
 }
 
 
-write[T](fd: ref Sys->FD, m: T): string
+writeresp[T](fd: ref Sys->FD, pre: array of byte, wrapmsg: int, m: T): string
 	for {
 	T =>	size:   fn(m: T): int;
 		pack:	fn(m: T, buf: array of byte, o: int): int;
 	}
 {
 	size := m.size(m);
-	buf := array[4+size] of byte;
+	wrap := 0;
+	if(wrapmsg)
+		wrap = 4;
+	buf := array[len pre+wrap+size] of byte;
 	o := 0;
-	o = p32(buf, o, (1<<31)|size);
+	if(len pre > 0) {
+		buf[o:] = pre;
+		o += len pre;
+	}
+	if(wrapmsg)
+		o = p32(buf, o, (1<<31)|size);
 	o = m.pack(m, buf, o);
 	if(sys->write(fd, buf, len buf) != len buf)
 		return sprint("write: %r");
 	return nil;
 }
 
-readmsg(fd: ref Sys->FD): array of byte raises (IO, Parse)
+readmsg(fd: ref Sys->FD): (array of byte, string)
 {
 say("reading Trpc");
 	buf := array[0] of byte;
 	for(;;) {
 		sbuf := array[4] of byte;
 		if(sys->readn(fd, sbuf, len sbuf) != len sbuf)
-			raise IO("short read");
+			return (nil, "short read");
 		v := g32(sbuf, 0).t0;
 		end := v&(1<<31);
 		v &= ~end;
 		if(v > 64*1024)
-			raise Parse("message too long");
+			return (nil, "message too long");
+		if(end)
+			end = 1;
 say(sprint("Trpc, fragment, length %d, end %d", v, end));
 
 		nbuf := array[len buf+v] of byte;
 		nbuf[:] = buf;
 		if(sys->readn(fd, nbuf[len buf:], v) != v)
-			raise IO("short read");
+			return (nil, "short read");
 		buf = nbuf;
 
 		if(end)
 			break;
 	}
 say(sprint("Trpc, have request, length %d", len buf));
-	return buf;
+	return (buf, nil);
 }
 
-read[T](fd: ref Sys->FD, m: T): T
+parsereq[T](buf: array of byte, m: T): T
 	for {
 	T =>	unpack: fn(m: ref Trpc, buf: array of byte): T raises (Badrpc, Badprog, Badproc, Badprocargs);
 	}
-	raises (IO, Parse, Badrpc)
+	raises (Parse, Badrpc)
 {
 	r := ref Trpc;
 	nullverf: Auth;
 	nullverf.which = Anone;
 	{
-		buf := readmsg(fd);
-
 		o := 0;
 		(r.xid, o) = g32(buf, o);
 		msgtype: int;
@@ -83,33 +91,33 @@ read[T](fd: ref Sys->FD, m: T): T
 		(r.cred.buf, o) = gopaque(buf, o, Authmax);
 		(r.verf.which, o) = g32(buf, o);
 		(r.verf.buf, o) = gopaque(buf, o, Authmax);
+say(sprint("Trpc, prog %d, vers %d, proc %d", r.prog, r.vers, r.proc));
 		return m.unpack(r, buf[o:]);
 	} exception e {
-	IO or
 	Parse =>
 		raise;
 	Badrpcversion =>
-		raise Badrpc (nil, ref Rrpc.Rpcmismatch (r.xid, 2, 2));
+		raise Badrpc (sprint("bad rpc version, %d", r.rpcvers), nil, ref Rrpc.Rpcmismatch (r.xid, 2, 2));
 
 	Badrpc =>
-		pick out := e.t1 {
+		pick out := e.t2 {
 		Progmismatch =>
 			out.verf = nullverf;
 		}
 		raise;
 	Badprog =>
-		raise Badrpc (nil, ref Rrpc.Badprog (r.xid, nullverf));
+		raise Badrpc (sprint("bad program, %d", r.prog), nil, ref Rrpc.Badprog (r.xid, nullverf));
 	Badproc =>
-		raise Badrpc (nil, ref Rrpc.Badproc (r.xid, nullverf));
+		raise Badrpc (sprint("bad procedure, %d", r.proc), nil, ref Rrpc.Badproc (r.xid, nullverf));
 	Badprocargs =>
-		raise Badrpc (nil, ref Rrpc.Badprocargs (r.xid, nullverf));
+		raise Badrpc (e, nil, ref Rrpc.Badprocargs (r.xid, nullverf));
 	}
 }
 
 
 Auth.size(a: self Auth): int
 {
-	return 4+4+len a.buf;
+	return a.pack(nil, 0);
 }
 
 Auth.pack(a: self Auth, buf: array of byte, o: int): int
@@ -201,17 +209,17 @@ p64(d: array of byte, o: int, v: big): int
 popaque(d: array of byte, o: int, buf: array of byte): int
 {
 	if(d == nil)
-		return o+4+len buf;
+		return o+4+up4(len buf);
 	o = p32(d, o, len buf);
 	d[o:] = buf;
-	o += len buf;
+	o += up4(len buf);
 	return o;
 }
 
 pstr(d: array of byte, o: int, s: string): int
 {
 	if(d == nil)
-		return o+4+len array of byte s;
+		return o+4+up4(len array of byte s);
 	buf := array of byte s;
 	o = p32(d, o, len buf);
 	d[o:] = buf;
@@ -222,7 +230,7 @@ pstr(d: array of byte, o: int, s: string): int
 g32(d: array of byte, o: int): (int, int) raises (Parse)
 {
 	if(o+4 > len d)
-		raise Parse("short buffer");
+		raise Parse(sprint("g32: short buffer, o+4 %d+4 > len d %d", o, len d));
 	v := 0;
 	v |= int d[o++]<<24;
 	v |= int d[o++]<<16;
@@ -234,7 +242,7 @@ g32(d: array of byte, o: int): (int, int) raises (Parse)
 g64(d: array of byte, o: int): (big, int) raises (Parse)
 {
 	if(o+8 > len d)
-		raise Parse("short buffer");
+		raise Parse(sprint("g64, short buffer, o+8 %d+8 > len d %d", o, len d));
 	v := big 0;
 	v |= big d[o++]<<56;
 	v |= big d[o++]<<48;
@@ -249,24 +257,37 @@ g64(d: array of byte, o: int): (big, int) raises (Parse)
 
 gopaque(buf: array of byte, o: int, max: int): (array of byte, int) raises (Parse)
 {
-	n: int;
-	(n, o) = g32(buf, o);
-	if(max >= 0 && n > max)
-		raise Parse(sprint("opaque larger than max allowed (%d > %d)", n, max));
-	if(o+n > len buf)
-		raise Parse(sprint("short buffer, opaque length %d, have %d", n, len buf-o));
-	return (buf[o:o+n], o+n);
+	{
+		n: int;
+		(n, o) = g32(buf, o);
+		if(max >= 0 && n > max)
+			raise Parse(sprint("opaque larger than max allowed (%d > %d)", n, max));
+		if(o+n > len buf)
+			raise Parse(sprint("short buffer, opaque end o+n %d+%d > len buf %d", o, n, len buf));
+		return (buf[o:o+n], up4(o+n));
+	} exception e {
+	Parse => raise Parse("gopaque: "+e);
+	}
 }
 
 gstr(buf: array of byte, o: int, max: int): (string, int) raises (Parse)
 {
-	n: int;
-	(n, o) = g32(buf, o);
-	if(max >= 0 && n > max)
-		raise Parse(sprint("string larger than max allowed (%d > %d)", n, max));
-	if(o+n > len buf)
-		raise Parse(sprint("short buffer, string length %d, have %d", n, len buf-o));
-	return (string buf[o:o+n], o+n);
+	{
+		n: int;
+		(n, o) = g32(buf, o);
+		if(max >= 0 && n > max)
+			raise Parse(sprint("string larger than max allowed (%d > %d)", n, max));
+		if(o+n > len buf)
+			raise Parse(sprint("short buffer, string end o+n %d+%d > len buf %d", o, n, len buf));
+		return (string buf[o:o+n], o+up4(n));
+	} exception e {
+	Parse => raise Parse("gstr: "+e);
+	}
+}
+
+up4(n: int): int
+{
+	return (n+3)&~3;
 }
 
 say(s: string)

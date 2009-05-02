@@ -4,7 +4,7 @@ Mntrpc: module
 
 	init:	fn();
 
-	ProgMnt: con 10005;
+	ProgMnt: con 100005;
 	VersMnt: con 3;
 
 	Mntpathmax:	con 1024;
@@ -28,16 +28,16 @@ Mntrpc: module
 		unpack:	fn(m: ref Trpc, buf: array of byte): ref Tmnt raises (Badrpc, Badprog, Badproc, Badprocargs);
 	};
 
-	MNT3ok:		con 0;
-	MNT3perm:	con 1;
-	MNT3noent:	con 2;
-	MNT3io:		con 5;
-	MNT3access:	con 13;
-	MNT3notdir:	con 20;
-	MNT3inval:	con 22;
-	MNT3nametoolong:	con 63;
-	MNT3notsupp:	con 10004;
-	MNT3serverfault:	con 10006;
+	Eok:		con 0;
+	Eperm:	con 1;
+	Enoent:	con 2;
+	Eio:		con 5;
+	Eaccess:	con 13;
+	Enotdir:	con 20;
+	Einval:	con 22;
+	Enametoolong:	con 63;
+	Enotsupp:	con 10004;
+	Eserverfault:	con 10006;
 
 	Export: adt {
 		dir:	string;
@@ -50,7 +50,7 @@ Mntrpc: module
 		Null =>
 		Mnt =>
 			status:	int;
-			# following only present if status is MNT3ok
+			# following only present if status is Eok
 			fh:	array of byte;
 			auths:	array of int;
 		Dump =>
