@@ -5,7 +5,7 @@ include "sys.m";
 	sprint: import sys;
 include "sunrpc.m";
 	sunrpc: Sunrpc;
-	g32, g64, gopaque, gstr, pbool, p32, p64, popaque, pstr: import sunrpc;
+	gbool, g32, g64, gopaque, gopaquefixed, gstr, pbool, p32, p64, popaque, popaquefixed, pstr: import sunrpc;
 	Parse, Badprog, Badproc, Badprocargs, Badrpc: import sunrpc;
 	Trpc, Rrpc, Auth: import sunrpc;
 include "nfsrpc.m";
@@ -47,7 +47,7 @@ Tnfs.unpack(m: ref Trpc, buf: array of byte): ref Tnfs raises (Badrpc, Badprog, 
 		raise Badprog;
 	if(m.vers != VersNfs) {
 		nullverf: Auth; # will be fixed by caller
-		raise Badrpc(sprint("bad version %d", m.vers), nil, ref Rrpc.Progmismatch (m.xid, nullverf, VersNfs, VersNfs));
+		raise Badrpc(sprint("bad Tnfs, version %d", m.vers), nil, ref Rrpc.Progmismatch (m.xid, nullverf, VersNfs, VersNfs));
 	}
 
 	{
@@ -63,9 +63,11 @@ Tnfs.unpack(m: ref Trpc, buf: array of byte): ref Tnfs raises (Badrpc, Badprog, 
 			tt = t := ref Tnfs.Setattr;
 			(t.fh, o) = gfilehandle(buf, o);
 			(t.newattr, o) = gsattr(buf, o);
-			(t.haveguard, o) = g32(buf, o);
-			if(t.haveguard)
+			(t.haveguard, o) = gbool(buf, o);
+			if(t.haveguard) {
 				(t.guardctime, o) = g32(buf, o);
+				(nil, o) = g32(buf, o);
+			}
 		Mlookup =>
 			tt = t := ref Tnfs.Lookup;
 			(t.where, o) = gdirargs(buf, o);
@@ -73,6 +75,8 @@ Tnfs.unpack(m: ref Trpc, buf: array of byte): ref Tnfs raises (Badrpc, Badprog, 
 			tt = t := ref Tnfs.Access;
 			(t.fh, o) = gfilehandle(buf, o);
 			(t.access, o) = g32(buf, o);
+			if(t.access&~ACmask)
+				raise Parse(sprint("Tnfs.Access, bad bits in access: 0x%x", t.access&~ACmask));
 		Mreadlink =>
 			tt = t := ref Tnfs.Readlink;
 			(t.fh, o) = gfilehandle(buf, o);
@@ -87,11 +91,35 @@ Tnfs.unpack(m: ref Trpc, buf: array of byte): ref Tnfs raises (Badrpc, Badprog, 
 			(t.offset, o) = g64(buf, o);
 			(t.count, o) = g32(buf, o);
 			(t.stablehow, o) = g32(buf, o);
+			case t.stablehow {
+			WriteUnstable or
+			WriteDatasync or
+			WriteFilesync =>
+				;
+			* =>
+				raise Parse(sprint("Tnfs.Write, bad stablehow %d", t.stablehow));
+			}
 			(t.data, o) = gopaque(buf, o, -1);
+			if(t.count != len t.data)
+				raise Parse(sprint("Tnfs.Write, count %d != len data %d", t.count, len t.data));
 		Mcreate =>
 			tt = t := ref Tnfs.Create;
 			(t.where, o) = gdirargs(buf, o);
-			(t.createhow, o) = g32(buf, o);
+			createhow: int;
+			(createhow, o) = g32(buf, o);
+			case createhow {
+			CreateUnchecked =>
+				t.createhow = c := ref Createhow.Unchecked;
+				(c.attr, o) = gsattr(buf, o);
+			CreateGuarded =>
+				t.createhow = c := ref Createhow.Guarded;
+				(c.attr, o) = gsattr(buf, o);
+			CreateExclusive =>
+				t.createhow = c := ref Createhow.Exclusive;
+				(c.createverf, o) = gopaquefixed(buf, o, Verfsize);
+			* =>
+				raise Parse(sprint("Tnfs.Create, bad createhow %d", createhow));
+			}
 		Mmkdir =>
 			tt = t := ref Tnfs.Mkdir;
 			(t.where, o) = gdirargs(buf, o);
@@ -150,13 +178,13 @@ Tnfs.unpack(m: ref Trpc, buf: array of byte): ref Tnfs raises (Badrpc, Badprog, 
 			tt = t := ref Tnfs.Readdir;
 			(t.fh, o) = gfilehandle(buf, o);
 			(t.cookie, o) = g64(buf, o);
-			(t.cookieverf, o) = gopaque(buf, o, Verfsizemax);
+			(t.cookieverf, o) = gopaquefixed(buf, o, Verfsize);
 			(t.count, o) = g32(buf, o);
 		Mreaddirplus =>
 			tt = t := ref Tnfs.Readdirplus;
 			(t.fh, o) = gfilehandle(buf, o);
 			(t.cookie, o) = g64(buf, o);
-			(t.cookieverf, o) = gopaque(buf, o, Verfsizemax);
+			(t.cookieverf, o) = gopaquefixed(buf, o, Verfsize);
 			(t.dircount, o) = g32(buf, o);
 			(t.maxcount, o) = g32(buf, o);
 		Mfsstat =>
@@ -177,7 +205,7 @@ Tnfs.unpack(m: ref Trpc, buf: array of byte): ref Tnfs raises (Badrpc, Badprog, 
 			raise Badproc;
 		}
 		if(o != len buf)
-			raise Badprocargs(sprint("leftover bytes, o %d != len buf %d", o, len buf));
+			raise Badprocargs(sprint("bad Tnfs, leftover bytes, o %d != len buf %d", o, len buf));
 		tt.r = m;
 		return tt;
 	} exception e {
@@ -207,7 +235,7 @@ Tnfs.text(mm: self ref Tnfs): string
 	Getattr =>	s += "fh "+hex(m.fh);
 	Setattr =>	s += "fh "+hex(m.fh);
 	Lookup =>	s += wheretext(m.where);
-	Access =>	s += "fh "+hex(m.fh);
+	Access =>	s += "fh "+hex(m.fh)+sprint(" access 0x%x", m.access);
 	Readlink =>	s += "fh "+hex(m.fh);
 	Read =>		s += "fh "+hex(m.fh)+sprint(" offset %bd count %d", m.offset, m.count);
 	Write =>	s += "fh "+hex(m.fh)+sprint(" offset %bd count %d", m.offset, m.count);
@@ -268,6 +296,8 @@ Rnfs.pack(mm: self ref Rnfs, buf: array of byte, o: int): int
 		Ok =>
 			o = p32(buf, o, Eok);
 			o = pboolattr(buf, o, r.attr);
+			if(r.access&~ACmask)
+				raise sprint("Rnfs.Access, bad bits in access: 0x%x", r.access&~ACmask);
 			o = p32(buf, o, r.access);
 		Fail =>
 			o = p32(buf, o, r.status);
@@ -301,8 +331,18 @@ Rnfs.pack(mm: self ref Rnfs, buf: array of byte, o: int): int
 			o = p32(buf, o, Eok);
 			o = pweakdata(buf, o, r.weak);
 			o = p32(buf, o, r.count);
+			case r.stable {
+			WriteUnstable or
+			WriteDatasync or
+			WriteFilesync =>
+				;
+			* =>
+				raise sprint("bad Rnfs.Write.Ok, unknown stable %d", r.stable);
+			}
 			o = p32(buf, o, r.stable);
-			o = popaque(buf, o, r.verf);
+			if(len r.verf != Verfsize)
+				raise "bad Rnfs.Write";
+			o = popaquefixed(buf, o, r.verf);
 		Fail =>
 			o = p32(buf, o, r.status);
 			o = pweakdata(buf, o, r.weak);
@@ -339,15 +379,18 @@ Rnfs.pack(mm: self ref Rnfs, buf: array of byte, o: int): int
 		pick r := m.r {
 		Ok =>
 			o = p32(buf, o, Eok);
-			o = popaque(buf, o, r.cookieverf);
+			o = pboolattr(buf, o, r.attr);
+			if(len r.cookieverf != Verfsize)
+				raise "bad Rnfs.Readdir";
+			o = popaquefixed(buf, o, r.cookieverf);
 			for(i := 0; i < len r.dir; i++) {
-				o = p32(buf, o, 1);
+				o = pbool(buf, o, 1);
 				e := r.dir[i];
 				o = p64(buf, o, e.id);
 				o = pstr(buf, o, e.name);
 				o = p64(buf, o, e.cookie);
 			}
-			o = p32(buf, o, 0);
+			o = pbool(buf, o, 0);
 			o = pbool(buf, o, r.eof);
 		Fail =>
 			o = p32(buf, o, r.status);
@@ -357,7 +400,10 @@ Rnfs.pack(mm: self ref Rnfs, buf: array of byte, o: int): int
 		pick r := m.r {
 		Ok =>
 			o = p32(buf, o, Eok);
-			o = popaque(buf, o, r.cookieverf);
+			o = pboolattr(buf, o, r.attr);
+			if(len r.cookieverf != Verfsize)
+				raise "bad Rnfs.Readdirplus";
+			o = popaquefixed(buf, o, r.cookieverf);
 			for(i := 0; i < len r.dir; i++) {
 				o = p32(buf, o, 1);
 				e := r.dir[i];
@@ -406,6 +452,8 @@ Rnfs.pack(mm: self ref Rnfs, buf: array of byte, o: int): int
 			o = p64(buf, o, r.maxfilesize);
 			o = p32(buf, o, r.timedelta.secs);
 			o = p32(buf, o, r.timedelta.nsecs);
+			if(r.props&~FSFmask)
+				raise sprint("Rnfs.Fsinfo.Ok, bad bits in props, 0x%x", r.props&~FSFmask);
 			o = p32(buf, o, r.props);
 		Fail =>
 			o = p32(buf, o, r.status);
@@ -431,7 +479,9 @@ Rnfs.pack(mm: self ref Rnfs, buf: array of byte, o: int): int
 		Ok =>
 			o = p32(buf, o, Eok);
 			o = pweakdata(buf, o, r.weak);
-			o = popaque(buf, o, r.writeverf);
+			if(len r.writeverf != Verfsize)
+				raise "bad Rnfs.Commit";
+			o = popaquefixed(buf, o, r.writeverf);
 		Fail =>
 			o = p32(buf, o, r.status);
 			o = pweakdata(buf, o, r.weak);
@@ -450,6 +500,18 @@ pboolattr(buf: array of byte, o: int, a: ref Attr): int
 
 pattr(buf: array of byte, o: int, a: Attr): int
 {
+	case a.ftype {
+	FTreg or
+	FTdir or
+	FTblk or
+	FTchr or
+	FTlnk or
+	FTsock or
+	FTfifo =>
+		;
+	* =>
+		raise sprint("bad file type %d, in attributes", a.ftype);
+	}
 	o = p32(buf, o, a.ftype);
 	o = p32(buf, o, a.mode);
 	o = p32(buf, o, a.nlink);
@@ -462,8 +524,11 @@ pattr(buf: array of byte, o: int, a: Attr): int
 	o = p64(buf, o, a.fsid);
 	o = p64(buf, o, a.fileid);
 	o = p32(buf, o, a.atime);
+	o = p32(buf, o, 0);
 	o = p32(buf, o, a.mtime);
+	o = p32(buf, o, 0);
 	o = p32(buf, o, a.ctime);
+	o = p32(buf, o, 0);
 	return o;
 }
 
@@ -471,7 +536,9 @@ pweakattr(buf: array of byte, o: int, w: ref Weakattr): int
 {
 	o = p64(buf, o, w.size);
 	o = p32(buf, o, w.mtime);
+	o = p32(buf, o, 0);
 	o = p32(buf, o, w.ctime);
+	o = p32(buf, o, 0);
 	return o;
 }
 
@@ -491,18 +558,40 @@ gsattr(buf: array of byte, o: int): (Sattr, int) raises Parse
 {
 	{
 		a: Sattr;
-		(a.setmode, o)	= g32(buf, o);
-		(a.mode, o)	= g32(buf, o);
-		(a.setuid, o)	= g32(buf, o);
-		(a.uid, o)	= g32(buf, o);
-		(a.setgid, o)	= g32(buf, o);
-		(a.gid, o)	= g32(buf, o);
-		(a.setsize, o)	= g32(buf, o);
-		(a.size, o)	= g64(buf, o);
-		(a.setatime, o)	= g32(buf, o);
-		(a.atime, o)	= g32(buf, o);
-		(a.setmtime, o)	= g32(buf, o);
-		(a.mtime, o)	= g32(buf, o);
+		(a.setmode, o) = gbool(buf, o);
+		if(a.setmode)
+			(a.mode, o) = g32(buf, o);
+		(a.setuid, o) = gbool(buf, o);
+		if(a.setuid)
+			(a.uid, o) = g32(buf, o);
+		(a.setgid, o) = gbool(buf, o);
+		if(a.setgid)
+			(a.gid, o) = g32(buf, o);
+		(a.setsize, o) = gbool(buf, o);
+		if(a.setsize)
+			(a.size, o) = g64(buf, o);
+		(a.setatime, o) = g32(buf, o);
+		case a.setatime {
+		SETdontchange or
+		SETtoservertime =>
+			;
+		SETtoclienttime =>
+			(a.atime, o)	= g32(buf, o);
+			(nil, o)	= g32(buf, o);
+		* =>
+			raise Parse(sprint("bad value 0x%x for sattr.setatime", a.setatime));
+		}
+		(a.setmtime, o) = g32(buf, o);
+		case a.setmtime {
+		SETdontchange or
+		SETtoservertime =>
+			;
+		SETtoclienttime =>
+			(a.mtime, o)	= g32(buf, o);
+			(nil, o)	= g32(buf, o);
+		* =>
+			raise Parse(sprint("bad value 0x%x for sattr.setmtime", a.setmtime));
+		}
 		return (a, o);
 	} exception e {
 	Parse => raise Parse("gsattr: "+e);

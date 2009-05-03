@@ -38,9 +38,17 @@ Nfsrpc: module
 	Ejukebox:	con 10008;
 
 	# file types
-	FTreg, FTdir, FTblk, FTchr, FTlnk, FTsock, FTfifo: con iota;
+	FTreg, FTdir, FTblk, FTchr, FTlnk, FTsock, FTfifo: con 1+iota;
 
-	Verfsizemax: con 8;
+	# access bits
+	ACread, AClookup, ACmodify, ACextend, ACdelete, ACexecute: con 1<<iota;
+	ACmask:	con ACread|AClookup|ACmodify|ACextend|ACdelete|ACexecute;
+
+	# fsinfo bits
+	FSFlink, FSFsymlink, FSFhomogeneous, FSFcansettime: con 1<<iota;
+	FSFmask:	con FSFlink|FSFsymlink|FSFhomogeneous|FSFcansettime;
+
+	Verfsize: con 8;
 	Filehandlesizemax:	con 64;
 
 	# device file
@@ -115,6 +123,16 @@ Nfsrpc: module
 		}
 	};
 
+	Createhow: adt {
+		pick {
+		Unchecked or
+		Guarded =>
+			attr:	Sattr;
+		Exclusive =>
+			createverf:	array of byte;
+		}
+	};
+
 	WriteUnstable, WriteDatasync, WriteFilesync: con iota;
 	CreateUnchecked, CreateGuarded, CreateExclusive: con iota;
 	Tnfs: adt {
@@ -147,7 +165,7 @@ Nfsrpc: module
 			data:	array of byte;
 		Create =>
 			where:	Dirargs;
-			createhow:	int;
+			createhow:	ref Createhow;
 		Mkdir =>
 			where:	Dirargs;
 			attr:	Sattr;
@@ -252,7 +270,7 @@ Nfsrpc: module
 			weak:	Weakdata;
 			count:	int;
 			stable:	int;
-			verf:	array of byte;
+			verf:	array of byte; # must be 8 bytes
 		Fail =>
 			status:	int;
 			weak:	Weakdata;
@@ -286,7 +304,7 @@ Nfsrpc: module
 		pick {
 		Ok =>
 			attr:	ref Attr; # may be nil
-			cookieverf:	array of byte;
+			cookieverf:	array of byte; # must be 8 bytes
 			dir:	array of Entry;
 			eof:	int;
 		Fail =>

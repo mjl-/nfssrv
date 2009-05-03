@@ -216,6 +216,16 @@ popaque(d: array of byte, o: int, buf: array of byte): int
 	return o;
 }
 
+popaquefixed(d: array of byte, o: int, buf: array of byte): int
+{
+	if(d == nil)
+		return o+up4(len buf);
+	d[o:] = buf;
+	o += up4(len buf);
+	return o;
+}
+
+
 pstr(d: array of byte, o: int, s: string): int
 {
 	if(d == nil)
@@ -223,7 +233,7 @@ pstr(d: array of byte, o: int, s: string): int
 	buf := array of byte s;
 	o = p32(d, o, len buf);
 	d[o:] = buf;
-	o += len buf;
+	o += up4(len buf);
 	return o;
 }
 
@@ -236,6 +246,20 @@ g32(d: array of byte, o: int): (int, int) raises (Parse)
 	v |= int d[o++]<<16;
 	v |= int d[o++]<<8;
 	v |= int d[o++]<<0;
+	return (v, o);
+}
+
+gbool(d: array of byte, o: int): (int, int) raises (Parse)
+{
+	if(o+4 > len d)
+		raise Parse(sprint("gbool: short buffer, o+4 %d+4 > len d %d", o, len d));
+	v := 0;
+	v |= int d[o++]<<24;
+	v |= int d[o++]<<16;
+	v |= int d[o++]<<8;
+	v |= int d[o++]<<0;
+	if(v != 0 && v != 1)
+		raise Parse(sprint("gbool: bad value %d, only 0 & 1 allowed", v));
 	return (v, o);
 }
 
@@ -267,6 +291,17 @@ gopaque(buf: array of byte, o: int, max: int): (array of byte, int) raises (Pars
 		return (buf[o:o+n], up4(o+n));
 	} exception e {
 	Parse => raise Parse("gopaque: "+e);
+	}
+}
+
+gopaquefixed(buf: array of byte, o: int, n: int): (array of byte, int) raises (Parse)
+{
+	{
+		if(o+n > len buf)
+			raise Parse(sprint("short buffer, opaque end o+n %d+%d > len buf %d", o, n, len buf));
+		return (buf[o:o+n], up4(o+n));
+	} exception e {
+	Parse => raise Parse("gopaquefixed: "+e);
 	}
 }
 

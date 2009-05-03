@@ -1,5 +1,49 @@
-this is to become an nfs (version 3) server for inferno, in limbo.
+# status
 
-nfssrv.  registers with portmapper.  has built-in mountd.  no need to have it separate.  the mountd part will only have to implement the MNT call.  perhaps UNMNT too.  the rest are probably not needed.  there will be no lock manager (if there should be one in the future, it would probably also be part of nfssrv).
+in development.  starting to become useable.
 
-separate portmapper, aka rpcbind.  with fs interface, for nfsd (and others) to register their program+version to their ports.
+
+# intro
+
+nfssrv is an nfs server for inferno, written in limbo.  it comes
+with a portmapper.  nfssrv also serves the mnt protocol.  only nfs
+version 3 is supported, and only the operations that make sense on
+inferno (e.g. no (sym)links or special files).  nfssrv serves the
+local file system, meaning all access is done as the user who started
+nfssrv.
+
+
+# install
+
+first, ensure a "mkconfig" file is present.  a bind/symlink to the
+mkconfig of your inferno install should do.  now "mk install" to
+compile and install the files.
+
+
+# latest version
+
+the latest version can be found at:
+
+	http://www.ueber.net/code/r/nfssrv
+
+
+# licence & author
+
+all files are in the public domain.  this code has been written by
+mechiel lukkien, reachable at mechiel@ueber.net or mechiel@xs4all.nl.
+
+
+# todo
+
+- strip leading zero's from fh.
+- limit namespace we export at startup, through optional
+- convert error strings to error codes...
+- do "unix authentication" for all procedures other than null.
+- document (in code) how file handle cache works
+- write manual pages
+- cache opened files
+- cleanup cached open directories
+- fix code in readdir(plus) so we never send too large responses
+- rpc message should hold source address (ip, port, proto)
+- see if Weakdata(nil,nil) can be filled in.  other optional data too perhaps.
+- think about enforcing permissions inside nfssrv?  perhaps just make the infrastructure, not actually implement it.
