@@ -3,6 +3,7 @@ Portmaprpc: module
 	PATH:	con "/dis/lib/portmaprpc.dis";
 
 	init:	fn();
+	dflag:	int;
 
 	ProgPortmap: con 100000;
 	VersPortmap: con 2;

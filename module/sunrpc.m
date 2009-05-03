@@ -3,6 +3,7 @@ Sunrpc: module
 	PATH:	con "/dis/lib/sunrpc.dis";
 
 	init:	fn();
+	dflag:	int;
 
 	Parse:	exception(string);
 	Badrpcversion:	exception;
@@ -41,6 +42,16 @@ Sunrpc: module
 
 		size:	fn(a: self Auth): int;
 		pack:	fn(a: self Auth, buf: array of byte, o: int): int;
+	};
+
+	Authsys: adt {
+		stamp:	int;
+		machine:	string;
+		uid,
+		gid:	int;
+		gids:	array of int;
+
+		unpack:	fn(buf: array of byte, o: int): ref Authsys raises (Parse);
 	};
 
 	Trpc: adt {

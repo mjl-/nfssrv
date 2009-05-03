@@ -35,15 +35,12 @@ mechiel lukkien, reachable at mechiel@ueber.net or mechiel@xs4all.nl.
 
 # todo
 
-- strip leading zero's from fh.
-- limit namespace we export at startup, through optional
-- convert error strings to error codes...
-- do "unix authentication" for all procedures other than null.
-- document (in code) how file handle cache works
-- write manual pages
+- fix code in readdir(plus) so we never send too large responses
+- fix file handle cache eviction scheme
 - cache opened files
 - cleanup cached open directories
-- fix code in readdir(plus) so we never send too large responses
 - rpc message should hold source address (ip, port, proto)
 - see if Weakdata(nil,nil) can be filled in.  other optional data too perhaps.
-- think about enforcing permissions inside nfssrv?  perhaps just make the infrastructure, not actually implement it.
+- think whether we can force clients to treat synthetic files
+  properly by sending the right non-caching responses (e.g. no new
+  attributes after an operation).

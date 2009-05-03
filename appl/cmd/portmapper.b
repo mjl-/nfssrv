@@ -62,6 +62,8 @@ init(nil: ref Draw->Context, args: list of string)
 	args = arg->argv();
 	if(args != nil)
 		arg->usage();
+	sunrpc->dflag = max(0, dflag-2);
+	portmaprpc->dflag = max(0, dflag-1);
 
 	regio := sys->file2chan("/chan", "portmapper");
 	if(regio == nil)
@@ -74,8 +76,10 @@ init(nil: ref Draw->Context, args: list of string)
 	dumpmapc = chan of chan of array of Map;
 
 	spawn register(regio);
-	spawn listen(tcpaddr);
-	spawn listenudp(udpaddr);
+	if(tcpaddr != nil)
+		spawn listen(tcpaddr);
+	if(udpaddr != nil)
+		spawn listenudp(udpaddr);
 	main();
 }
 
@@ -337,6 +341,13 @@ hex(d: array of byte): string
 	for(i := 0; i < len d; i++)
 		s += sprint("%02x", int d[i]);
 	return s;
+}
+
+max(a, b: int): int
+{
+	if(a > b)
+		return a;
+	return b;
 }
 
 warn(s: string)

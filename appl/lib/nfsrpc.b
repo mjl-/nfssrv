@@ -33,6 +33,7 @@ Mfsinfo,
 Mpathconf,
 Mcommit: con iota;
 
+dflag = 0;
 
 init()
 {

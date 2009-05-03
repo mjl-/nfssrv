@@ -3,6 +3,7 @@ Mntrpc: module
 	PATH:	con "/dis/lib/mntrpc.dis";
 
 	init:	fn();
+	dflag:	int;
 
 	ProgMnt: con 100005;
 	VersMnt: con 3;

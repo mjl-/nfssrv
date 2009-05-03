@@ -10,6 +10,7 @@ include "sunrpc.m";
 	Trpc, Rrpc, Auth: import sunrpc;
 include "mntrpc.m";
 
+dflag = 0;
 
 init()
 {

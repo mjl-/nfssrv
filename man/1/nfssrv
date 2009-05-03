@@ -1,0 +1,74 @@
+.TH nfssrv 1
+.SH NAME
+nfssrv - nfs server, version 3
+.SH synopsis
+.B nfssrv
+[
+.B -d
+] [
+.B -p
+.I udp|tcp
+] [
+.B -n
+.I nfsport
+] [
+.B -m
+.I mntport
+] [
+.I root
+]
+.SH DESCRIPTION
+.B Nfssrv
+is an NFSv3 server.  It exports and serves the single ``mount point''
+.I root
+.RI (`` / ''
+by default).
+Nfssrv has no way of verifying access permissions for the uid & gid
+from the client.  Instead it simply executes all file operations
+as the user who started nfssrv.
+.PP
+Since Styx does not support ``special files'', such as (sym)links
+or device nodes, operations involving such file types are not
+supported.
+.PP
+At startup, nfssrv registers itself with the portmapper through
+.IR /chan/portmapper .
+.SS Options
+.TP
+.B -d
+Print debug output.
+.TP
+.B -p
+Listen only for the specified protocol,
+.I udp
+or
+.IR tcp .
+Nfssrv listens for both protocols by default.
+.TP
+.BI -n " nfsport"
+Listen on port
+.I nfsport
+for the nfs server, 2049 by default.
+.TP
+.BI -m " mntport"
+Listen on port
+.I mntport
+for the mnt service, 39422 by default.
+.SH SOURCE
+.B /appl/cmd/nfssrv.b
+.br
+.B /appl/lib/nfsrpc.b
+.br
+.B /appl/lib/mntrpc.b
+.br
+.B /appl/lib/sunrpc.b
+.SH SEE ALSO
+.IR portmapper (1),
+.br
+RFC1813, ``NFS Version 3 Protocol'',
+.br
+RFC1831, ``Remote Procedure Call Protocol Version 2'',
+.br
+RFC4506, ``XDR: External Data Representation Standard''.
+.SH BUGS
+Nfssrv does not try to be smart.  For example, it does not have a duplicate request cache.

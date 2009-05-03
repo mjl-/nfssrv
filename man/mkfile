@@ -1,8 +1,7 @@
 <../mkconfig
 
-MAN=
+MAN=\
+	1/nfssrv\
+	1/portmapper\
 
 <mkman
-
-nuke:QV:
-	

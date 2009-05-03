@@ -3,6 +3,7 @@ Nfsrpc: module
 	PATH:	con "/dis/lib/nfsrpc.dis";
 
 	init:	fn();
+	dflag:	int;
 
 	ProgNfs: con 100003;
 	VersNfs: con 3;

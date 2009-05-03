@@ -12,6 +12,8 @@ include "portmaprpc.m";
 
 Mnull, Mset, Munset, Mgetport, Mdump, Mcallit: con iota;
 
+dflag = 0;
+
 init()
 {
 	sys = load Sys Sys->PATH;

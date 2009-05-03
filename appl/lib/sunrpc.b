@@ -5,6 +5,8 @@ include "sys.m";
 	sprint: import sys;
 include "sunrpc.m";
 
+dflag = 0;
+
 init()
 {
 	sys = load Sys Sys->PATH;
@@ -37,7 +39,7 @@ writeresp[T](fd: ref Sys->FD, pre: array of byte, wrapmsg: int, m: T): string
 
 readmsg(fd: ref Sys->FD): (array of byte, string)
 {
-say("reading Trpc");
+if(dflag)say("reading Trpc");
 	buf := array[0] of byte;
 	for(;;) {
 		sbuf := array[4] of byte;
@@ -50,7 +52,7 @@ say("reading Trpc");
 			return (nil, "message too long");
 		if(end)
 			end = 1;
-say(sprint("Trpc, fragment, length %d, end %d", v, end));
+if(dflag)say(sprint("Trpc, fragment, length %d, end %d", v, end));
 
 		nbuf := array[len buf+v] of byte;
 		nbuf[:] = buf;
@@ -61,7 +63,7 @@ say(sprint("Trpc, fragment, length %d, end %d", v, end));
 		if(end)
 			break;
 	}
-say(sprint("Trpc, have request, length %d", len buf));
+if(dflag)say(sprint("Trpc, have request, length %d", len buf));
 	return (buf, nil);
 }
 
@@ -91,7 +93,7 @@ parsereq[T](buf: array of byte, m: T): T
 		(r.cred.buf, o) = gopaque(buf, o, Authmax);
 		(r.verf.which, o) = g32(buf, o);
 		(r.verf.buf, o) = gopaque(buf, o, Authmax);
-say(sprint("Trpc, prog %d, vers %d, proc %d", r.prog, r.vers, r.proc));
+if(dflag)say(sprint("Trpc, prog %d, vers %d, proc %d", r.prog, r.vers, r.proc));
 		return m.unpack(r, buf[o:]);
 	} exception e {
 	Parse =>
@@ -126,6 +128,31 @@ Auth.pack(a: self Auth, buf: array of byte, o: int): int
 	o = popaque(buf, o, a.buf);
 	return o;
 }
+
+
+Authsys.unpack(buf: array of byte, o: int): ref Authsys raises (Parse)
+{
+	{
+		a := ref Authsys;
+		(a.stamp, o) = g32(buf, o);
+		(a.machine, o) = gstr(buf, o, 255);
+		(a.uid, o) = g32(buf, o);
+		(a.gid, o) = g32(buf, o);
+		ngids: int;
+		(ngids, o) = g32(buf, o);
+		if(ngids > 16)
+			raise Parse(sprint("too many gids, %d > 16", ngids));
+		a.gids = array[ngids] of int;
+		for(i := 0; i < ngids; i++)
+			(a.gids[i], o) = g32(buf, o);
+		if(o != len buf)
+			raise Parse(sprint("leftover data, o %d != len buf %d", o, len buf));
+		return a;
+	} exception e {
+	Parse => raise Parse ("auth_sys: "+e);
+	}
+}
+
 
 Rrpc.size(mm: self ref Rrpc): int
 {
@@ -212,7 +239,8 @@ popaque(d: array of byte, o: int, buf: array of byte): int
 		return o+4+up4(len buf);
 	o = p32(d, o, len buf);
 	d[o:] = buf;
-	o += up4(len buf);
+	o += len buf;
+	o = clearpad(d, o);
 	return o;
 }
 
@@ -221,7 +249,8 @@ popaquefixed(d: array of byte, o: int, buf: array of byte): int
 	if(d == nil)
 		return o+up4(len buf);
 	d[o:] = buf;
-	o += up4(len buf);
+	o += len buf;
+	o = clearpad(d, o);
 	return o;
 }
 
@@ -233,7 +262,8 @@ pstr(d: array of byte, o: int, s: string): int
 	buf := array of byte s;
 	o = p32(d, o, len buf);
 	d[o:] = buf;
-	o += up4(len buf);
+	o += len buf;
+	o = clearpad(d, o);
 	return o;
 }
 
@@ -318,6 +348,13 @@ gstr(buf: array of byte, o: int, max: int): (string, int) raises (Parse)
 	} exception e {
 	Parse => raise Parse("gstr: "+e);
 	}
+}
+
+clearpad(d: array of byte, o: int): int
+{
+	n := (4-(o&3))&3;
+	d[o:] = array[n] of {* => byte 0};
+	return o+n;
 }
 
 up4(n: int): int
