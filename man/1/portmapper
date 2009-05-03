@@ -1,0 +1,49 @@
+.TH portmapper 1
+.SH NAME
+portmapper - port mapper
+.SH synopsis
+.B portmapper
+[
+.B -d
+] [
+.B -t
+.I tcpaddr
+] [
+.B -u
+.I udpaddr
+]
+.SH DESCRIPTION
+.B Portmapper
+maps sun rpc services to port numbers.  A service is identified by the triplet
+.IR program ,
+.IR version ,
+.IR protocol .
+All three are numerical.  Common programs are 100000 for portmapper
+itself and 100003 for NFS.  Ports for different versions of a program can be
+registered, and for different protocols (udp or tcp).
+.PP
+Portmapper allows new registrations over the network, on
+.I tcpaddr
+and
+.I udpaddr
+(tcp!*!sunrpc and udp!*!sunrpc by default).
+It also allows registrations through the file
+.IR /chan/portmapper .
+RPC servers register by writing one line per registration:
+.IR "program version tcp|udp port" .
+Where
+.IR program ,
+.I version
+and
+.I port
+are numerical.  The registrations remain valid until the file is closed.
+.SH SOURCE
+.B /appl/cmd/portmapper.b
+.br
+.B /appl/lib/portmaprpc.b
+.br
+.B /appl/lib/sunrpc.b
+.SH SEE ALSO
+.IR nfssrv (1),
+.br
+RFC1833, ``Binding Protocols for ONC RPC Version 2'',
