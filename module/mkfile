@@ -2,5 +2,6 @@
 
 MODS=\
 	sunrpc.m\
+	portmap.m\
 
 <mkmod

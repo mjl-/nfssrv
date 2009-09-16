@@ -3,5 +3,6 @@
 MAN=\
 	1/nfssrv\
 	1/portmapper\
+	4/nfsfs\
 
 <mkman

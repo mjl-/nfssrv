@@ -5,6 +5,8 @@ Sunrpc: module
 	init:	fn();
 	dflag:	int;
 
+	Rpcversion:	con 2;
+
 	Parse:	exception(string);
 	Badrpcversion:	exception;
 	Badprog:	exception;
@@ -51,6 +53,8 @@ Sunrpc: module
 		gid:	int;
 		gids:	array of int;
 
+		size:	fn(a: self ref Authsys): int;
+		pack:	fn(a: self ref Authsys, buf: array of byte, o: int): int;
 		unpack:	fn(buf: array of byte, o: int): ref Authsys raises (Parse);
 	};
 
@@ -63,6 +67,9 @@ Sunrpc: module
 		cred:	Auth;
 		verf:	Auth;
 		# program-specific request
+
+		size:	fn(m: self ref Trpc): int;
+		pack:	fn(m: self ref Trpc, buf: array of byte, o: int): int;
 	};
 
 	Rrpc: adt {
@@ -79,6 +86,7 @@ Sunrpc: module
 		Badprocargs or
 		Systemerr =>
 			verf:	Auth;
+
 		Rpcmismatch =>
 			low, high:	int;
 		Autherror =>
@@ -95,7 +103,12 @@ Sunrpc: module
 		T =>	unpack:	fn(m: ref Trpc, buf: array of byte): T raises (Badrpc, Badprog, Badproc, Badprocargs);
 		}
 		raises (Parse, Badrpc);
-	writeresp:	fn[T](fd: ref Sys->FD, pre: array of byte, wrapmsg: int, m: T): string
+	parseresp:	fn[T](tm: ref Trpc, buf: array of byte, m: T): T
+		for {
+		T =>	unpack:	fn(tm: ref Trpc, rm: ref Rrpc, buf: array of byte): T raises (Badrpc, Badproc, Badprocargs);
+		}
+		raises (Parse, Badrpc);
+	writerpc:	fn[T](fd: ref Sys->FD, pre: array of byte, wrapmsg: int, m: T): string
 		for {
 		T =>	size:	fn(m: T): int;
 			pack:	fn(m: T, buf: array of byte, o: int): int;

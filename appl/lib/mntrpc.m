@@ -12,9 +12,11 @@ Mntrpc: module
 	Mntnamemax:	con 255;
 	Fhmax:	con 64;
 
+	mnttags: array of string;
+
 	Mnull, Mmnt, Mdump, Mumnt, Mumntall, Mexport: con iota;
 	Tmnt: adt {
-		r: ref Trpc;
+		r: ref Sunrpc->Trpc;
 		pick {
 		Null =>
 		Mnt =>
@@ -26,7 +28,9 @@ Mntrpc: module
 		Export =>
 		}
 
-		unpack:	fn(m: ref Trpc, buf: array of byte): ref Tmnt raises (Badrpc, Badprog, Badproc, Badprocargs);
+		size:	fn(m: self ref Tmnt): int;
+		pack:	fn(m: self ref Tmnt, buf: array of byte, o: int): int;
+		unpack:	fn(m: ref Sunrpc->Trpc, buf: array of byte): ref Tmnt raises (Badrpc, Badprog, Badproc, Badprocargs);
 	};
 
 	Eok:		con 0;
@@ -46,7 +50,7 @@ Mntrpc: module
 	};
 
 	Rmnt: adt {
-		r: ref Rrpc;
+		r: ref Sunrpc->Rrpc;
 		pick {
 		Null =>
 		Mnt =>
@@ -64,5 +68,6 @@ Mntrpc: module
 
 		size:	fn(m: self ref Rmnt): int;
 		pack:	fn(m: self ref Rmnt, buf: array of byte, o: int): int;
+		unpack:	fn(tm: ref Sunrpc->Trpc, rm: ref Sunrpc->Rrpc, buf: array of byte): ref Rmnt raises (Badrpc, Badproc, Badprocargs);
 	};
 };

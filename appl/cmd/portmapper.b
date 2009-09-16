@@ -275,7 +275,7 @@ transact(buf, pre: array of byte, fd: ref Sys->FD): string
 	Badrpc =>
 		r := e.t2;
 		warn("portmap, bad rpc: "+e.t0);
-		return sunrpc->writeresp(fd, pre, pre==nil, r);
+		return sunrpc->writerpc(fd, pre, pre==nil, r);
 	Parse =>
 		return "parsing request: "+e;
 	}
@@ -319,12 +319,12 @@ transact(buf, pre: array of byte, fd: ref Sys->FD): string
 		r = ref Rportmap.Dump (rok, maps);
 	Callit =>
 		say("callit (not implemented)");
-		return sunrpc->writeresp(fd, pre, pre==nil, rbad);
+		return sunrpc->writerpc(fd, pre, pre==nil, rbad);
 	* =>
 		raise "internal error";
 	}
 	say("have portmap response");
-	return sunrpc->writeresp(fd, pre, pre==nil, r);
+	return sunrpc->writerpc(fd, pre, pre==nil, r);
 }
 
 kill(pid: int)

@@ -1,0 +1,92 @@
+.TH NFSFS 4
+.SH NAME
+nfsfs \- nfs client
+.SH SYNOPSIS
+mount {
+.B nfsfs
+[
+.B -d
+] [
+.B -u
+.I uid
+] [
+.B -g
+.I gid,...
+] [
+.B -p
+.I passwd
+.I group
+]
+.I host
+.I path
+} mtpt
+.SH DESCRIPTION
+.B Nfsfs
+is an nfs client.  Styx is served on its standard input.  Styx requests are implemented using nfs messages.  The root file system served by
+nfsfs is
+.I path
+from
+.I host.
+At startup, nfsfs dials (with tcp) the portmap service at
+.IR host ,
+to find the tcp ports the mount and nfs protocols are served on at
+.IR host .
+The mount service is dialed to get a root file handle for
+.IR path .
+.B Nfsfs
+then dials the nfs service and uses that connection to implement the styx operations.
+.PP
+Nfsfs also provides access to nfs file system information through the read-only files
+.I /chan/nfsinfo
+and
+.IR /chan/nfsstat .
+.SS Options
+.TP
+.B -d
+Print debugging information.
+.TP
+.BI -u " uid"
+Perform portmap, mnt and nfs operations as
+.IR uid .
+The default is 0.
+.TP
+.BI -g " gid,..."
+Perform portmap, mnt and nfs operations as
+.IR gid,... .
+The default is 0.
+.TP
+.BI -p " passwd group"
+Read a mapping of user names to uids (and back) from
+.I passwd
+and from group names (and back) from
+.IR group .
+By default, numeric id's are used.
+The format of the files is the common unix password and group file format.
+.SH EXAMPLE
+.EX
+.EE
+.SEE ALSO
+.IR nfssrv (1),
+.IR mount (1).
+.br
+RFC1813, ``NFS Version 3 Protocol''
+.SH SOURCE
+.B /appl/cmd/nfsfs.b
+.br
+.B /appl/lib/portmap.b
+.br
+.B /appl/lib/nfsrpc.b
+.br
+.B /appl/lib/mntrpc.b
+.br
+.B /appl/lib/portmaprpc.b
+.br
+.B /appl/lib/sunrpc.b
+.SH BUGS
+No caching (e.g. for attributes).  Each fid has one file handle cached, stale file handles are refreshed by one lookup per path element, from the root file handle.
+.br
+Does not dial from ports < 1024.
+.br
+Handles each styx message synchronously, so no concurrently styx or nfs operations.
+.br
+Only operates over TCP, for the portmap, mount and nfs protocols.

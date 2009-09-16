@@ -3,6 +3,9 @@
 TARG=\
 	portmapper.dis\
 	nfssrv.dis\
+	testportmap.dis\
+	testmntrpc.dis\
+	nfsfs.dis\
 
 MODULES=\
 	../lib/portmaprpc.m\
@@ -10,14 +13,16 @@ MODULES=\
 	../lib/nfsrpc.m\
 
 SYSMODULES=\
-	sunrpc.m\
 	arg.m\
 	bufio.m\
 	daytime.m\
 	draw.m\
-	keyring.m\
 	string.m\
 	sys.m\
+	tables.m\
+	util0.m\
+	sunrpc.m\
+	portmap.m\
 
 DISBIN=$ROOT/dis
 

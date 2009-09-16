@@ -42,6 +42,135 @@ init()
 	sunrpc->init();
 }
 
+error(v: int): string
+{
+	case v {
+	Nfsrpc->Eok =>		return "success";
+	Nfsrpc->Eperm =>	return "permission denied";
+	Nfsrpc->Enoent =>	return "file does not exist";
+	Nfsrpc->Eio =>		return "i/o error";
+	Nfsrpc->Enxio =>	return "i/o error, no such device";
+	Nfsrpc->Eacces =>	return "permission denied";
+	Nfsrpc->Eexist =>	return "file already exists";
+	Nfsrpc->Exdev =>	return "bad argument, cross-device hard link";
+	Nfsrpc->Enodev =>	return "file does not exist, no such device";
+	Nfsrpc->Enotdir =>	return "not a directory";
+	Nfsrpc->Eisdir =>	return "bad argument, is a directory";
+	Nfsrpc->Einval =>	return "bad argument";
+	Nfsrpc->Efbig =>	return "file too big";
+	Nfsrpc->Enospc =>	return "no space left";
+	Nfsrpc->Erofs =>	return "permission denied, read-only file system";
+	Nfsrpc->Emlink =>	return "too many hard links";
+	Nfsrpc->Enametoolong =>	return "bad argument, name too long";
+	Nfsrpc->Enotempty =>	return "directory not empty";
+	Nfsrpc->Edquot =>	return "quota exceeded";
+	Nfsrpc->Estale =>	return "stale nfs file handle";
+	Nfsrpc->Eremote =>	return "too many levels of remote";
+	Nfsrpc->Ebadhandle =>	return "invalid nfs file handle";
+	Nfsrpc->Enotsync =>	return "synchronization mismatch";
+	Nfsrpc->Ebadcookie =>	return "bad cookie";
+	Nfsrpc->Enotsupp =>	return "operation not supported";
+	Nfsrpc->Etoosmall =>	return "buffer or request too small";
+	Nfsrpc->Eserverfault =>	return "server fault";
+	Nfsrpc->Ebadtype =>	return "bad type, not supported";
+	Nfsrpc->Ejukebox =>	return "slow jukebox, try again";
+	* =>
+		return sprint("error, %d", v);
+	}
+}
+
+Tnfs.size(m: self ref Tnfs): int
+{
+	return m.pack(nil, 0);
+}
+
+Tnfs.pack(mm: self ref Tnfs, buf: array of byte, o: int): int
+{
+	o = mm.r.pack(buf, o);
+	pick m := mm {
+	Null =>
+		;
+	Getattr =>
+		o = popaque(buf, o, m.fh);
+	Setattr =>
+		o = popaque(buf, o, m.fh);
+		o = psattr(buf, o, m.newattr);
+		o = pbool(buf, o, m.haveguard);
+		if(m.haveguard) {
+			o = p32(buf, o, m.guardctime);
+			o = p32(buf, o, 0);
+		}
+	Lookup =>
+		o = pdirargs(buf, o, m.where);
+	Access =>
+		o = popaque(buf, o, m.fh);
+		o = p32(buf, o, m.access);
+	Readlink =>
+		o = popaque(buf, o, m.fh);
+	Read =>
+		o = popaque(buf, o, m.fh);
+		o = p64(buf, o, m.offset);
+		o = p32(buf, o, m.count);
+	Write =>
+		o = popaque(buf, o, m.fh);
+		o = p64(buf, o, m.offset);
+		o = p32(buf, o, m.count);
+		o = p32(buf, o, m.stablehow);
+		o = popaque(buf, o, m.data);
+	Create =>
+		o = pdirargs(buf, o, m.where);
+		o = pcreatehow(buf, o, m.createhow);
+	Mkdir =>
+		o = pdirargs(buf, o, m.where);
+		o = psattr(buf, o, m.attr);
+	Symlink =>
+		o = pdirargs(buf, o, m.where);
+		o = psattr(buf, o, m.attr);
+		o = pstr(buf, o, m.path);
+	Mknod =>
+		o = pdirargs(buf, o, m.where);
+		o = pnod(buf, o, m.node);
+	Remove =>
+		o = pdirargs(buf, o, m.where);
+	Rmdir =>
+		o = pdirargs(buf, o, m.where);
+	Rename =>
+		o = pdirargs(buf, o, m.owhere);
+		o = pdirargs(buf, o, m.nwhere);
+	Link =>
+		o = popaque(buf, o, m.fh);
+		o = pdirargs(buf, o, m.link);
+	Readdir =>
+		o = popaque(buf, o, m.fh);
+		o = p64(buf, o, m.cookie);
+		if(len m.cookieverf != Verfsize)
+			raise "bad args";
+		o = popaquefixed(buf, o, m.cookieverf);
+		o = p32(buf, o, m.count);
+	Readdirplus =>
+		o = popaque(buf, o, m.fh);
+		o = p64(buf, o, m.cookie);
+		if(len m.cookieverf != Verfsize)
+			raise "bad args";
+		o = popaquefixed(buf, o, m.cookieverf);
+		o = p32(buf, o, m.dircount);
+		o = p32(buf, o, m.maxcount);
+	Fsstat =>
+		o = popaque(buf, o, m.rootfh);
+	Fsinfo =>
+		o = popaque(buf, o, m.rootfh);
+	Pathconf =>
+		o = popaque(buf, o, m.fh);
+	Commit =>
+		o = popaque(buf, o, m.fh);
+		o = p64(buf, o, m.offset);
+		o = p32(buf, o, m.count);
+	* =>
+		raise "missing case";
+	}
+	return o;
+}
+
 Tnfs.unpack(m: ref Trpc, buf: array of byte): ref Tnfs raises (Badrpc, Badprog, Badproc, Badprocargs)
 {
 	if(m.prog != ProgNfs)
@@ -106,21 +235,7 @@ Tnfs.unpack(m: ref Trpc, buf: array of byte): ref Tnfs raises (Badrpc, Badprog, 
 		Mcreate =>
 			tt = t := ref Tnfs.Create;
 			(t.where, o) = gdirargs(buf, o);
-			createhow: int;
-			(createhow, o) = g32(buf, o);
-			case createhow {
-			CreateUnchecked =>
-				t.createhow = c := ref Createhow.Unchecked;
-				(c.attr, o) = gsattr(buf, o);
-			CreateGuarded =>
-				t.createhow = c := ref Createhow.Guarded;
-				(c.attr, o) = gsattr(buf, o);
-			CreateExclusive =>
-				t.createhow = c := ref Createhow.Exclusive;
-				(c.createverf, o) = gopaquefixed(buf, o, Verfsize);
-			* =>
-				raise Parse(sprint("Tnfs.Create, bad createhow %d", createhow));
-			}
+			(t.createhow, o) = gcreatehow(buf, o);
 		Mmkdir =>
 			tt = t := ref Tnfs.Mkdir;
 			(t.where, o) = gdirargs(buf, o);
@@ -129,38 +244,11 @@ Tnfs.unpack(m: ref Trpc, buf: array of byte): ref Tnfs raises (Badrpc, Badprog, 
 			tt = t := ref Tnfs.Symlink;
 			(t.where, o) = gdirargs(buf, o);
 			(t.attr, o) = gsattr(buf, o);
-			(t.path, o) = gstr(buf, o, -1); # xxx no max?
+			(t.path, o) = gstr(buf, o, -1);
 		Mmknod =>
 			tt = t := ref Tnfs.Mknod;
 			(t.where, o) = gdirargs(buf, o);
-			nodetype: int;
-			(nodetype, o) = g32(buf, o);
-			nn: ref Nod;
-			case nodetype {
-			FTreg =>
-				nn = ref Nod.Reg;
-			FTdir =>
-				nn = ref Nod.Dir;
-			FTlnk =>
-				nn = ref Nod.Lnk;
-			FTblk =>
-				nn = n := ref Nod.Blk;
-				(n.attr, o) = gsattr(buf, o);
-				(n.spec.major, o) = g32(buf, o);
-				(n.spec.minor, o) = g32(buf, o);
-			FTchr =>
-				nn = n := ref Nod.Chr;
-				(n.attr, o) = gsattr(buf, o);
-				(n.spec.major, o) = g32(buf, o);
-				(n.spec.minor, o) = g32(buf, o);
-			FTsock =>
-				nn = n := ref Nod.Sock;
-				(n.attr, o) = gsattr(buf, o);
-			FTfifo =>
-				nn = n := ref Nod.Fifo;
-				(n.attr, o) = gsattr(buf, o);
-			}
-			t.node = nn;
+			(t.node, o) = gnod(buf, o);
 		Mremove =>
 			tt = t := ref Tnfs.Remove;
 			(t.where, o) = gdirargs(buf, o);
@@ -375,7 +463,7 @@ Rnfs.pack(mm: self ref Rnfs, buf: array of byte, o: int): int
 	Link =>
 		o = p32(buf, o, m.status);
 		o = pboolattr(buf, o, m.attr);
-		pweakdata(buf, o, m.weak);
+		o = pweakdata(buf, o, m.weak);
 	Readdir =>
 		pick r := m.r {
 		Ok =>
@@ -491,12 +579,364 @@ Rnfs.pack(mm: self ref Rnfs, buf: array of byte, o: int): int
 	return o;
 }
 
+Rnfs.unpack(tm: ref Sunrpc->Trpc, rm: ref Sunrpc->Rrpc, buf: array of byte): ref Rnfs raises (Badrpc, Badproc, Badprocargs)
+{
+	{
+		o := 0;
+		r: ref Rnfs;
+		case tm.proc {
+		Mnull =>
+			r = ref Rnfs.Null (rm);
+		Mgetattr =>
+			status: int;
+			(status, o) = g32(buf, o);
+			m: ref Rgetattr;
+			if(status == Eok) {
+				m = mm := ref Rgetattr.Ok;
+				(mm.attr, o) = gattr(buf, o);
+			} else
+				m = ref Rgetattr.Fail (status);
+			r = ref Rnfs.Getattr (rm, m);
+
+		Msetattr =>
+			r = rr := ref Rnfs.Setattr;
+			r.m = rm;
+			(rr.status, o) = g32(buf, o);
+			(rr.weak, o) = gweakdata(buf, o);
+		Mlookup =>
+			status: int;
+			(status, o) = g32(buf, o);
+			if(status == Eok) {
+				rr := ref Rlookup.Ok;
+				(rr.fh, o) = gfilehandle(buf, o);
+				(rr.fhattr, o) = gboolattr(buf, o);
+				(rr.dirattr, o) = gboolattr(buf, o);
+				r = ref Rnfs.Lookup (rm, rr);
+			} else {
+				rr := ref Rlookup.Fail (status, nil);
+				(rr.dirattr, o) = gboolattr(buf, o);
+				r = ref Rnfs.Lookup (rm, rr);
+			}
+
+		Maccess =>
+			status: int;
+			(status, o) = g32(buf, o);
+			a: ref Attr;
+			(a, o) = gboolattr(buf, o);
+			if(status == Eok) {
+				rr := ref Raccess.Ok;
+				rr.attr = a;
+				(rr.access, o) = g32(buf, o);
+				r = ref Rnfs.Access (rm, rr);
+			} else
+				r = ref Rnfs.Access (rm, ref Raccess.Fail (status, a));
+
+		Mreadlink =>
+			status: int;
+			(status, o) = g32(buf, o);
+			a: ref Attr;
+			(a, o) = gboolattr(buf, o);
+			if(status == Eok) {
+				rr := ref Rreadlink.Ok;
+				rr.attr = a;
+				(rr.path, o) = gstr(buf, o, -1);
+				r = ref Rnfs.Readlink (rm, rr);
+			} else
+				r = ref Rnfs.Readlink (rm, ref Rreadlink.Fail (status, a));
+		Mread =>
+			status: int;
+			(status, o) = g32(buf, o);
+			a: ref Attr;
+			(a, o) = gboolattr(buf, o);
+			if(status == Eok) {
+				rr := ref Rread.Ok;
+				rr.attr = a;
+				(rr.count, o) = g32(buf, o);
+				(rr.eof, o) = g32(buf, o);
+				(rr.data, o) = gopaque(buf, o, -1);
+				if(rr.count != len rr.data)
+					raise Badprocargs(sprint("read's count (%d) does not match length of data (%d)", rr.count, len rr.data));
+				r = ref Rnfs.Read (rm, rr);
+			} else 
+				r = ref Rnfs.Read (rm, ref Rread.Fail (status, a));
+		Mwrite =>
+			status: int;
+			(status, o) = g32(buf, o);
+			wd: Weakdata;
+			(wd, o) = gweakdata(buf, o);
+			if(status == Eok) {
+				rr := ref Rwrite.Ok;
+				rr.weak = wd;
+				(rr.count, o) = g32(buf, o);
+				(rr.stable, o) = g32(buf, o);
+				(rr.verf, o) = gopaquefixed(buf, o, Verfsize);
+				r = ref Rnfs.Write (rm, rr);
+			} else
+				r = ref Rnfs.Write (rm, ref Rwrite.Fail (status, wd));
+		Mcreate or
+		Mmkdir or
+		Msymlink or
+		Mmknod =>
+			status: int;
+			(status, o) = g32(buf, o);
+			cc: ref Rchange;
+			if(status == Eok) {
+				b: int;
+				cc = c := ref Rchange.Ok;
+				(b, o) = g32(buf, o);
+				if(b)
+					(c.fh, o) = gfilehandle(buf, o);
+				(c.attr, o) = gboolattr(buf, o);
+				(c.weak, o) = gweakdata(buf, o);
+			} else {
+				cc = c := ref Rchange.Fail;
+				c.status = status;
+				(c.weak, o) = gweakdata(buf, o);
+			}
+			case tm.proc {
+			Mcreate =>	r = ref Rnfs.Create (rm, cc);
+			Mmkdir =>	r = ref Rnfs.Mkdir (rm, cc);
+			Msymlink =>	r = ref Rnfs.Symlink (rm, cc);
+			Mmknod =>	r = ref Rnfs.Mknod (rm, cc);
+			}
+		Mremove =>
+			status: int;
+			(status, o) = g32(buf, o);
+			r = rr := ref Rnfs.Remove;
+			rr.m = rm;
+			rr.status = status;
+			(rr.weak, o) = gweakdata(buf, o);
+		Mrmdir =>
+			status: int;
+			(status, o) = g32(buf, o);
+			r = rr := ref Rnfs.Rmdir;
+			rr.m = rm;
+			rr.status = status;
+			(rr.weak, o) = gweakdata(buf, o);
+		Mrename =>
+			status: int;
+			(status, o) = g32(buf, o);
+			r = rr := ref Rnfs.Rename;
+			rr.m = rm;
+			rr.status = status;
+			(rr.fromdir, o) = gweakdata(buf, o);
+			(rr.todir, o) = gweakdata(buf, o);
+		Mlink =>
+			status: int;
+			(status, o) = g32(buf, o);
+			r = rr := ref Rnfs.Link;
+			rr.m = rm;
+			(rr.attr, o) = gboolattr(buf, o);
+			(rr.weak, o) = gweakdata(buf, o);
+		Mreaddir =>
+			status: int;
+			(status, o) = g32(buf, o);
+			a: ref Attr;
+			(a, o) = gboolattr(buf, o);
+			if(status == Eok) {
+				rr := ref Rreaddir.Ok;
+				rr.attr = a;
+				(rr.cookieverf, o) = gopaquefixed(buf, o, Verfsize);
+				l: list of Entry;
+				for(;;) {
+					more: int;
+					(more, o) = g32(buf, o);
+					if(more == 0)
+						break;
+					e: Entry;
+					(e.id, o) = g64(buf, o);
+					(e.name, o) = gstr(buf, o, -1);
+					(e.cookie, o) = g64(buf, o);
+					l = e::l;
+				}
+				dirs := array[len l] of Entry;
+				i := len dirs-1;
+				for(; l != nil; l = tl l)
+					dirs[i--] = hd l;
+				rr.dir = dirs;
+				(rr.eof, o) = g32(buf, o);
+				r = ref Rnfs.Readdir (rm, rr);
+			} else
+				r = ref Rnfs.Readdir (rm, ref Rreaddir.Fail (status, a));
+
+		Mreaddirplus =>
+			status: int;
+			(status, o) = g32(buf, o);
+			a: ref Attr;
+			(a, o) = gboolattr(buf, o);
+			if(status == Eok) {
+				rr := ref Rreaddirplus.Ok;
+				rr.attr = a;
+				(rr.cookieverf, o) = gopaquefixed(buf, o, Verfsize);
+				l: list of Entryplus;
+				for(;;) {
+					more: int;
+					(more, o) = g32(buf, o);
+					if(more == 0)
+						break;
+					e: Entryplus;
+					(e.id, o) = g64(buf, o);
+					(e.name, o) = gstr(buf, o, -1);
+					(e.cookie, o) = g64(buf, o);
+					(e.attr, o) = gboolattr(buf, o);
+					b: int;
+					(b, o) = g32(buf, o);
+					if(b)
+						(e.fh, o) = gfilehandle(buf, o);
+					l = e::l;
+				}
+				dirs := array[len l] of Entryplus;
+				i := len dirs-1;
+				for(; l != nil; l = tl l)
+					dirs[i--] = hd l;
+				rr.dir = dirs;
+				(rr.eof, o) = g32(buf, o);
+				r = ref Rnfs.Readdirplus (rm, rr);
+			} else
+				r = ref Rnfs.Readdirplus (rm, ref Rreaddirplus.Fail (status, a));
+
+		Mfsstat =>
+			status: int;
+			(status, o) = g32(buf, o);
+			if(status == Eok) {
+				rr := ref Rfsstat.Ok;
+				(rr.attr, o) = gboolattr(buf, o);
+				(rr.tbytes, o) = g64(buf, o);
+				(rr.fbytes, o) = g64(buf, o);
+				(rr.abytes, o) = g64(buf, o);
+				(rr.tfiles, o) = g64(buf, o);
+				(rr.ffiles, o) = g64(buf, o);
+				(rr.afiles, o) = g64(buf, o);
+				(rr.invarsec, o) = g32(buf, o);
+				r = ref Rnfs.Fsstat (rm, rr);
+			} else {
+				rr := ref Rfsstat.Fail;
+				rr.status = status;
+				(rr.attr, o) = gboolattr(buf, o);
+				r = ref Rnfs.Fsstat (rm, rr);
+			}
+		Mfsinfo =>
+			status: int;
+			(status, o) = g32(buf, o);
+			if(status == Eok) {
+				rr := ref Rfsinfo.Ok;
+				(rr.attr, o) = gboolattr(buf, o);
+				(rr.rtmax, o) = g32(buf, o);
+				(rr.rtpref, o) = g32(buf, o);
+				(rr.rtmult, o) = g32(buf, o);
+				(rr.wtmax, o) = g32(buf, o);
+				(rr.wtpref, o) = g32(buf, o);
+				(rr.wtmult, o) = g32(buf, o);
+				(rr.dtpref, o) = g32(buf, o);
+				(rr.maxfilesize, o) = g64(buf, o);
+				(rr.timedelta.secs, o) = g32(buf, o);
+				(rr.timedelta.nsecs, o) = g32(buf, o);
+				(rr.props, o) = g32(buf, o);
+				r = ref Rnfs.Fsinfo (rm, rr);
+			} else {
+				rr := ref Rfsinfo.Fail;
+				rr.status = status;
+				(rr.attr, o) = gboolattr(buf, o);
+				r = ref Rnfs.Fsinfo (rm, rr);
+			}
+		Mpathconf =>
+			status: int;
+			attr: ref Attr;
+			(status, o) = g32(buf, o);
+			(attr, o) = gboolattr(buf, o);
+			if(status == Eok) {
+				rr := ref Rpathconf.Ok;
+				rr.attr = attr;
+				(rr.linkmax, o) = g32(buf, o);
+				(rr.namemax, o) = g32(buf, o);
+				(rr.notrunc, o) = g32(buf, o);
+				(rr.chownrestr, o) = g32(buf, o);
+				(rr.caseinsens, o) = g32(buf, o);
+				(rr.casepres, o) = g32(buf, o);
+				r = ref Rnfs.Pathconf (rm, rr);
+			} else {
+				rr := ref Rpathconf.Fail (status, attr);
+				r = ref Rnfs.Pathconf (rm, rr);
+			}
+		Mcommit =>
+			status: int;
+			(status, o) = g32(buf, o);
+			wd: Weakdata;
+			(wd, o) = gweakdata(buf, o);
+			if(status == Eok) {
+				rr := ref Rcommit.Ok (wd, nil);
+				(rr.writeverf, o) = gopaquefixed(buf, o, Verfsize);  
+				r = ref Rnfs.Commit (rm, rr);
+			} else {
+				rr := ref Rcommit.Fail (status, wd);
+				r = ref Rnfs.Commit (rm, rr);
+			}
+		* =>
+			raise Badproc;
+		}
+		if(o != len buf)
+			raise Badprocargs (sprint("%d leftover bytes, o %d, len buf %d", len buf-o, o, len buf));;
+		return r;
+	} exception e {
+	Parse =>
+		raise Badprocargs(e);
+	Badproc =>
+		raise;
+	Badprocargs =>
+		raise;
+	}
+}
+
 pboolattr(buf: array of byte, o: int, a: ref Attr): int
 {
 	o = pbool(buf, o, a != nil);
 	if(a != nil)
 		o = pattr(buf, o, *a);
 	return o;
+}
+
+gboolattr(buf: array of byte, o: int): (ref Attr, int) raises (Parse)
+{
+	{
+		b: int;
+		attr: ref Attr;
+		(b, o) = gbool(buf, o);
+		if(b) {
+			a: Attr;
+			(a, o) = gattr(buf, o);
+			attr = ref a;
+		}
+		return (nil, o);
+	} exception e {
+	Parse => raise Parse("gboolattr: "+e);
+	}
+}
+
+gattr(buf: array of byte, o: int): (Attr, int) raises (Parse)
+{
+	{
+		a: Attr;
+		(a.ftype, o)	= g32(buf, o);
+		(a.mode, o)	= g32(buf, o);
+		(a.nlink, o)	= g32(buf, o);
+		(a.uid, o)	= g32(buf, o);
+		(a.gid, o)	= g32(buf, o);
+		(a.size, o)	= g64(buf, o);
+		(a.used, o)	= g64(buf, o);
+		(a.rdev.major, o) = g32(buf, o);
+		(a.rdev.minor, o) = g32(buf, o);
+		(a.fsid, o)	= g64(buf, o);
+		(a.fileid, o)	= g64(buf, o);
+		(a.atime, o)	= g32(buf, o);
+		(nil, o)	= g32(buf, o);
+		(a.mtime, o)	= g32(buf, o);
+		(nil, o)	= g32(buf, o);
+		(a.ctime, o)	= g32(buf, o);
+		(nil, o)	= g32(buf, o);
+		return (a, o);
+	} exception e {
+	Parse => raise Parse("gsattr: "+e);
+	}
 }
 
 pattr(buf: array of byte, o: int, a: Attr): int
@@ -533,6 +973,21 @@ pattr(buf: array of byte, o: int, a: Attr): int
 	return o;
 }
 
+gweakattr(buf: array of byte, o: int): (ref Weakattr, int) raises Parse
+{
+	{
+		w := ref Weakattr;
+		(w.size, o) = g64(buf, o);
+		(w.mtime, o) = g32(buf, o);
+		(nil, o) = g32(buf, o);
+		(w.ctime, o) = g32(buf, o);
+		(nil, o) = g32(buf, o);
+		return (w, o);
+	} exception e {
+	Parse => raise Parse("gweakattr: "+e);
+	}
+}
+
 pweakattr(buf: array of byte, o: int, w: ref Weakattr): int
 {
 	o = p64(buf, o, w.size);
@@ -541,6 +996,21 @@ pweakattr(buf: array of byte, o: int, w: ref Weakattr): int
 	o = p32(buf, o, w.ctime);
 	o = p32(buf, o, 0);
 	return o;
+}
+
+gweakdata(buf: array of byte, o: int): (Weakdata, int) raises Parse
+{
+	{
+		w: Weakdata;
+		b: int;
+		(b, o) = gbool(buf, o);
+		if(b)
+			(w.before, o) = gweakattr(buf, o);
+		(w.after, o) = gboolattr(buf, o);
+		return (w, o);
+	} exception e {
+	Parse => raise Parse("gweakdata: "+e);
+	}
 }
 
 pweakdata(buf: array of byte, o: int, w: Weakdata): int
@@ -599,16 +1069,156 @@ gsattr(buf: array of byte, o: int): (Sattr, int) raises Parse
 	}
 }
 
+pboolval(buf: array of byte, o: int, b, v, zero: int): int
+{
+	o = p32(buf, o, b);
+	if(b) {
+		o = p32(buf, o, v);
+		if(zero)
+			o = p32(buf, o, 0);
+	}
+	return o;
+}
+
+psattr(buf: array of byte, o: int, a: Sattr): int
+{
+	o = pboolval(buf, o, a.setmode, a.mode, 0);
+	o = pboolval(buf, o, a.setuid, a.uid, 0);
+	o = pboolval(buf, o, a.setgid, a.gid, 0);
+	o = p32(buf, o, a.setsize);
+	if(a.setsize)
+		o = p64(buf, o, a.size);
+	o = pboolval(buf, o, a.setatime, a.atime, 1);
+	o = pboolval(buf, o, a.setmtime, a.mtime, 1);
+	return o;
+}
+
 gdirargs(buf: array of byte, o: int): (Dirargs, int) raises Parse
 {
 	{
 		d: Dirargs;
 		(d.fh, o) = gfilehandle(buf, o);
-		(d.name, o) = gstr(buf, o, -1); # xxx no max?
+		(d.name, o) = gstr(buf, o, -1);
 		return (d, o);
 	} exception e {
 	Parse => raise Parse("gdirargs: "+e);
 	}
+}
+
+pdirargs(buf: array of byte, o: int, d: Dirargs): int
+{
+	o = popaque(buf, o, d.fh);
+	o = pstr(buf, o, d.name);
+	return o;
+}
+
+
+gcreatehow(buf: array of byte, o: int): (ref Createhow, int) raises Parse
+{
+	{
+		createhow: int;
+		cc: ref Createhow;
+		(createhow, o) = g32(buf, o);
+		case createhow {
+		CreateUnchecked =>
+			cc = c := ref Createhow.Unchecked;
+			(c.attr, o) = gsattr(buf, o);
+		CreateGuarded =>
+			cc = c := ref Createhow.Guarded;
+			(c.attr, o) = gsattr(buf, o);
+		CreateExclusive =>
+			cc = c := ref Createhow.Exclusive;
+			(c.createverf, o) = gopaquefixed(buf, o, Verfsize);
+		* =>
+			raise Parse(sprint("Tnfs.Create, bad createhow %d", createhow));
+		}
+		return (cc, o);
+	} exception e {
+	Parse => raise Parse("gcreatehow: "+e);
+	}
+}
+
+pcreatehow(buf: array of byte, o: int, cc: ref Createhow): int
+{
+	pick c := cc {
+	Unchecked =>
+		o = p32(buf, o, CreateUnchecked);
+		o = psattr(buf, o, c.attr);
+	Guarded =>
+		o = p32(buf, o, CreateGuarded);
+		o = psattr(buf, o, c.attr);
+	Exclusive =>
+		o = p32(buf, o, CreateExclusive);
+		o = popaque(buf, o, c.createverf);
+	* =>
+		raise "missing case";
+	}
+	return o;
+}
+
+gnod(buf: array of byte, o: int): (ref Nod, int) raises Parse
+{
+	{
+		nodetype: int;
+		(nodetype, o) = g32(buf, o);
+		nn: ref Nod;
+		case nodetype {
+		FTreg =>
+			nn = ref Nod.Reg;
+		FTdir =>
+			nn = ref Nod.Dir;
+		FTlnk =>
+			nn = ref Nod.Lnk;
+		FTblk =>
+			nn = n := ref Nod.Blk;
+			(n.attr, o) = gsattr(buf, o);
+			(n.spec.major, o) = g32(buf, o);
+			(n.spec.minor, o) = g32(buf, o);
+		FTchr =>
+			nn = n := ref Nod.Chr;
+			(n.attr, o) = gsattr(buf, o);
+			(n.spec.major, o) = g32(buf, o);
+			(n.spec.minor, o) = g32(buf, o);
+		FTsock =>
+			nn = n := ref Nod.Sock;
+			(n.attr, o) = gsattr(buf, o);
+		FTfifo =>
+			nn = n := ref Nod.Fifo;
+			(n.attr, o) = gsattr(buf, o);
+		* =>
+			raise Parse("unrecognized nodetype");
+		}
+		return (nn, o);
+	} exception e {
+	Parse => raise Parse("gnod: "+e);
+	}
+}
+
+pnod(buf: array of byte, o: int, nn: ref Nod): int
+{
+	pick n := nn {
+	Chr =>
+		o = p32(buf, o, FTchr);
+		o = psattr(buf, o, n.attr);
+		o = p32(buf, o, n.spec.major);
+		o = p32(buf, o, n.spec.minor);
+	Blk =>
+		o = p32(buf, o, FTblk);
+		o = psattr(buf, o, n.attr);
+		o = p32(buf, o, n.spec.major);
+		o = p32(buf, o, n.spec.minor);
+	Sock =>
+		o = p32(buf, o, FTsock);
+		o = psattr(buf, o, n.attr);
+	Fifo =>
+		o = p32(buf, o, FTfifo);
+		o = psattr(buf, o, n.attr);
+	Reg =>	o = p32(buf, o, FTreg);
+	Dir =>	o = p32(buf, o, FTdir);
+	Lnk =>	o = p32(buf, o, FTlnk);
+	* =>	raise "missing case";
+	}
+	return o;
 }
 
 gfilehandle(buf: array of byte, o: int): (array of byte, int) raises Parse

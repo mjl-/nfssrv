@@ -5,12 +5,13 @@ in development.  starting to become useable.
 
 # intro
 
-nfssrv is an nfs server for inferno, written in limbo.  it comes
-with a portmapper.  nfssrv also serves the mnt protocol.  only nfs
-version 3 is supported, and only the operations that make sense on
-inferno (e.g. no (sym)links or special files).  nfssrv serves the
-local file system, meaning all access is done as the user who started
-nfssrv.
+this package contains nfssrv and nfsfs, an nfs server and client,
+for inferno and written in limbo.  it uses and comes with a library
+for parsing/packing nfs protocol messages.  a portmapper and mnt
+service is included too.  only nfs version 3 is supported, and only
+the operations that make sense on inferno (e.g. no (sym)links or
+special files).  nfssrv serves the local file system, meaning all
+access is done as the user who started nfssrv.
 
 
 # install
@@ -18,6 +19,9 @@ nfssrv.
 first, ensure a "mkconfig" file is present.  a bind/symlink to the
 mkconfig of your inferno install should do.  now "mk install" to
 compile and install the files.
+
+when building from within inferno, insert SYSHOST=Inferno and ROOT=
+in the mk invocations to override the values in the mkconfig.
 
 
 # latest version
@@ -35,12 +39,15 @@ mechiel lukkien, reachable at mechiel@ueber.net or mechiel@xs4all.nl.
 
 # todo
 
-- fix code in readdir(plus) so we never send too large responses
-- fix file handle cache eviction scheme
-- cache opened files
-- cleanup cached open directories
-- rpc message should hold source address (ip, port, proto)
-- see if Weakdata(nil,nil) can be filled in.  other optional data too perhaps.
-- think whether we can force clients to treat synthetic files
+- nfsfs: determine if we need to do some verification (cookies)
+- nfsfs: should we use restricted ports?
+- nfssrv: fix code in readdir(plus) so we never send too large responses
+- nfssrv: fix file handle cache eviction scheme
+- nfssrv: cache opened files
+- nfssrv: cleanup cached open directories
+- nfssrv: implement worker threads and allow responding to messages out of order.
+- nfssrv: rpc message should hold source address (ip, port, proto)
+- nfssrv: see if Weakdata(nil,nil) can be filled in.  other optional data too perhaps.
+- nfssrv: think whether we can force clients to treat synthetic files
   properly by sending the right non-caching responses (e.g. no new
   attributes after an operation).

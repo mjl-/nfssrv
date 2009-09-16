@@ -5,6 +5,7 @@ TARG=\
 	portmaprpc.dis\
 	mntrpc.dis\
 	nfsrpc.dis\
+	portmap.dis\
 
 MODULES=\
 	portmaprpc.m\
@@ -15,6 +16,7 @@ SYSMODULES=\
 	sys.m\
 	bufio.m\
 	sunrpc.m\
+	portmap.m\
 
 DISBIN=$ROOT/dis/lib
 

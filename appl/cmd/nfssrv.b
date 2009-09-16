@@ -484,7 +484,7 @@ mnttransact(buf, pre: array of byte, fd: ref Sys->FD): string
 	Badrpc =>
 		r := e.t2;
 		warn("mnt, badrpc: "+e.t0);
-		return sunrpc->writeresp(fd, pre, pre==nil, r);
+		return sunrpc->writerpc(fd, pre, pre==nil, r);
 	Parse =>
 		return "parsing request: "+e;
 	}
@@ -493,7 +493,7 @@ mnttransact(buf, pre: array of byte, fd: ref Sys->FD): string
 
 	if(tagof tt != tagof Tnfs.Null && as == nil) {
 		rbadauth := ref Rrpc.Autherror (tt.r.xid, sunrpc->AUtooweak);
-		return sunrpc->writeresp(fd, pre, pre==nil, rbadauth);
+		return sunrpc->writerpc(fd, pre, pre==nil, rbadauth);
 	}
 
 	r: ref Rmnt;
@@ -526,7 +526,7 @@ mnttransact(buf, pre: array of byte, fd: ref Sys->FD): string
 		raise "internal error";
 	}
 	say("have mnt response");
-	return sunrpc->writeresp(fd, pre, pre==nil, r);
+	return sunrpc->writerpc(fd, pre, pre==nil, r);
 }
 
 
@@ -559,7 +559,7 @@ nfstransact(buf, pre: array of byte, fd: ref Sys->FD): string
 	Badrpc =>
 		r := e.t2;
 		warn("nfs, bad rpc: "+e.t0);
-		return sunrpc->writeresp(fd, pre, pre==nil, r);
+		return sunrpc->writerpc(fd, pre, pre==nil, r);
 	Parse =>
 		return "parsing request: "+e;
 	}
@@ -568,7 +568,7 @@ nfstransact(buf, pre: array of byte, fd: ref Sys->FD): string
 
 	if(tagof tt != tagof Tnfs.Null && as == nil) {
 		rbadauth := ref Rrpc.Autherror (tt.r.xid, sunrpc->AUtooweak);
-		return sunrpc->writeresp(fd, pre, pre==nil, rbadauth);
+		return sunrpc->writerpc(fd, pre, pre==nil, rbadauth);
 	}
 
 	rr: ref Rnfs;
@@ -1096,7 +1096,7 @@ say(sprint("readdirplus, len entries %d, eof %d", len entries, eof));
 	}
 	rr.m = rok;
 	say("have nfs response");
-	return sunrpc->writeresp(fd, pre, pre==nil, rr);
+	return sunrpc->writerpc(fd, pre, pre==nil, rr);
 }
 
 

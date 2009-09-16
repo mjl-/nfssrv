@@ -13,7 +13,7 @@ init()
 }
 
 
-writeresp[T](fd: ref Sys->FD, pre: array of byte, wrapmsg: int, m: T): string
+writerpc[T](fd: ref Sys->FD, pre: array of byte, wrapmsg: int, m: T): string
 	for {
 	T =>	size:   fn(m: T): int;
 		pack:	fn(m: T, buf: array of byte, o: int): int;
@@ -32,6 +32,8 @@ writeresp[T](fd: ref Sys->FD, pre: array of byte, wrapmsg: int, m: T): string
 	if(wrapmsg)
 		o = p32(buf, o, (1<<31)|size);
 	o = m.pack(m, buf, o);
+	if(o != len buf)
+		return "bad pack";
 	if(sys->write(fd, buf, len buf) != len buf)
 		return sprint("write: %r");
 	return nil;
@@ -84,7 +86,7 @@ parsereq[T](buf: array of byte, m: T): T
 		if(msgtype != MTcall)
 			raise Parse("message rpc response, expected rpc request");
 		(r.rpcvers, o) = g32(buf, o);
-		if(r.rpcvers != 2)
+		if(r.rpcvers != Rpcversion)
 			raise Badrpcversion();
 		(r.prog, o) = g32(buf, o);
 		(r.vers, o) = g32(buf, o);
@@ -116,6 +118,71 @@ if(dflag)say(sprint("Trpc, prog %d, vers %d, proc %d", r.prog, r.vers, r.proc));
 	}
 }
 
+parseresp[T](tm: ref Trpc, buf: array of byte, m: T): T
+	for {
+	T =>	unpack:	fn(tm: ref Trpc, rm: ref Rrpc, buf: array of byte): T raises (Badrpc, Badproc, Badprocargs);
+	}
+	raises (Parse, Badrpc)
+{
+	r: ref Rrpc;
+	{
+		o := 0;
+		xid, rpctype, status, msgtype: int;
+		(xid, o) = g32(buf, o);
+		(rpctype, o) = g32(buf, o);
+		if(rpctype != MTreply)
+			raise Parse ("not an rpc reply");
+		(status, o) = g32(buf, o);
+		case status {
+		MSGaccepted =>
+			verf: Auth;
+			(verf.which, o) = g32(buf, o);
+			(verf.buf, o) = gopaque(buf, o, -1);
+			(msgtype, o) = g32(buf, o);
+			case msgtype {
+			ACsuccess =>		r = ref Rrpc.Success (xid, verf);
+			ACprogmismatch =>
+				r = rr := ref Rrpc.Progmismatch (xid, verf, 0, 0);
+				(rr.low, o) = g32(buf, o);
+				(rr.high, o) = g32(buf, o);
+			ACprogunavail =>	r = ref Rrpc.Badprog (xid, verf);
+			ACprocunavail =>	r = ref Rrpc.Badproc (xid, verf);
+			ACgarbageargs =>	r = ref Rrpc.Badprocargs (xid, verf);
+			ACsystemerr =>		r = ref Rrpc.Systemerr (xid, verf);
+			}
+		MSGdenied =>
+			(msgtype, o) = g32(buf, o);
+			case msgtype {
+			RSrpcmismatch =>
+				r = rr := ref Rrpc.Rpcmismatch;
+				rr.xid = xid;
+				(rr.low, o) = g32(buf, o);
+				(rr.high, o) = g32(buf, o);
+			RSautherror =>
+				r = rr := ref Rrpc.Autherror;
+				rr.xid = xid;
+				(rr.error, o) = g32(buf, o);
+			* =>
+				raise Parse ("bad rpc denied");
+			}
+		* =>
+			raise Parse ("bad rpc reply status");
+		}
+		if(tagof r != tagof Rrpc.Success)
+			raise Badrpc ("rpc failed", tm, r);
+		return m.unpack(tm, r, buf[o:]);
+	} exception e {
+	Parse =>
+		raise;
+	Badrpc =>
+		raise;
+	Badproc =>
+		raise Badrpc ("bad procedure", nil, nil);
+	Badprocargs =>
+		raise Badrpc (e, nil, nil);
+	}
+}
+
 
 Auth.size(a: self Auth): int
 {
@@ -129,6 +196,25 @@ Auth.pack(a: self Auth, buf: array of byte, o: int): int
 	return o;
 }
 
+
+Authsys.size(a: self ref Authsys): int
+{
+	return a.pack(nil, 0);
+}
+
+Authsys.pack(a: self ref Authsys, buf: array of byte, o: int): int
+{
+	if(len a.gids > 16)
+		raise "too many gids";
+	o = p32(buf, o, a.stamp);
+	o = pstr(buf, o, a.machine);
+	o = p32(buf, o, a.uid);
+	o = p32(buf, o, a.gid);
+	o = p32(buf, o, len a.gids);
+	for(i := 0; i < len a.gids; i++)
+		o = p32(buf, o, a.gids[i]);
+	return o;
+}
 
 Authsys.unpack(buf: array of byte, o: int): ref Authsys raises (Parse)
 {
@@ -153,6 +239,24 @@ Authsys.unpack(buf: array of byte, o: int): ref Authsys raises (Parse)
 	}
 }
 
+ 
+Trpc.size(m: self ref Trpc): int
+{
+	return m.pack(nil, 0);
+}
+
+Trpc.pack(m: self ref Trpc, buf: array of byte, o: int): int
+{
+	o = p32(buf, o, m.xid);
+	o = p32(buf, o, MTcall);
+	o = p32(buf, o, m.rpcvers);
+	o = p32(buf, o, m.prog);
+	o = p32(buf, o, m.vers);
+	o = p32(buf, o, m.proc);
+	o = m.cred.pack(buf, o);
+	o = m.verf.pack(buf, o);
+	return o;
+}
 
 Rrpc.size(mm: self ref Rrpc): int
 {
@@ -270,7 +374,7 @@ pstr(d: array of byte, o: int, s: string): int
 g32(d: array of byte, o: int): (int, int) raises (Parse)
 {
 	if(o+4 > len d)
-		raise Parse(sprint("g32: short buffer, o+4 %d+4 > len d %d", o, len d));
+		raise Parse(sprint("g32: short buffer, o+4 %d > len d %d", o+4, len d));
 	v := 0;
 	v |= int d[o++]<<24;
 	v |= int d[o++]<<16;
@@ -282,7 +386,7 @@ g32(d: array of byte, o: int): (int, int) raises (Parse)
 gbool(d: array of byte, o: int): (int, int) raises (Parse)
 {
 	if(o+4 > len d)
-		raise Parse(sprint("gbool: short buffer, o+4 %d+4 > len d %d", o, len d));
+		raise Parse(sprint("gbool: short buffer, o+4 %d > len d %d", o+4, len d));
 	v := 0;
 	v |= int d[o++]<<24;
 	v |= int d[o++]<<16;
@@ -296,7 +400,7 @@ gbool(d: array of byte, o: int): (int, int) raises (Parse)
 g64(d: array of byte, o: int): (big, int) raises (Parse)
 {
 	if(o+8 > len d)
-		raise Parse(sprint("g64, short buffer, o+8 %d+8 > len d %d", o, len d));
+		raise Parse(sprint("g64, short buffer, o+8 %d > len d %d", o+8, len d));
 	v := big 0;
 	v |= big d[o++]<<56;
 	v |= big d[o++]<<48;

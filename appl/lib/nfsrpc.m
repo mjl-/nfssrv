@@ -38,6 +38,8 @@ Nfsrpc: module
 	Ebadtype:	con 10007;
 	Ejukebox:	con 10008;
 
+	error:	fn(v: int): string;
+
 	# file types
 	FTreg, FTdir, FTblk, FTchr, FTlnk, FTsock, FTfifo: con 1+iota;
 
@@ -58,7 +60,8 @@ Nfsrpc: module
 	};
 
 	Time: adt {
-		secs, nsecs:	int;
+		secs,
+		nsecs:	int;
 	};
 
 	Attr: adt {
@@ -103,6 +106,7 @@ Nfsrpc: module
 		setmtime,
 		mtime:	int;
 	};
+	nullsattr: con Sattr (0, 0, 0, 0, 0, 0, 0, big 0, 0, 0, 0, 0);
 
 	Dirargs: adt {
 		fh:	array of byte;
@@ -210,6 +214,8 @@ Nfsrpc: module
 			count:	int;
 		}
 
+		size:	fn(m: self ref Tnfs): int;
+		pack:	fn(m: self ref Tnfs, buf: array of byte, o: int): int;
 		unpack:	fn(m: ref Trpc, buf: array of byte): ref Tnfs raises (Badrpc, Badprog, Badproc, Badprocargs);
 		text:	fn(m: self ref Tnfs): string;
 	};
@@ -438,5 +444,6 @@ Nfsrpc: module
 
 		size:	fn(m: self ref Rnfs): int;
 		pack:	fn(m: self ref Rnfs, buf: array of byte, o: int): int;
+		unpack:	fn(tm: ref Sunrpc->Trpc, rm: ref Sunrpc->Rrpc, buf: array of byte): ref Rnfs raises (Badrpc, Badproc, Badprocargs);
 	};
 };
