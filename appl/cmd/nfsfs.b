@@ -84,6 +84,7 @@ Fid: adt {
 	dircookie:	big;
 	dircookieverf:	array of byte;
 	direof:	int;
+	diroffset:	big;
 
 	qid:	fn(f: self ref Fid): Sys->Qid;
 };
@@ -291,11 +292,11 @@ attr2dir(name: string, path: big, a: ref Attr): Sys->Dir
 	d.gid = lookupid(groups, a.gid);
 	qtype := 0;
 	if(a.ftype == Nfsrpc->FTdir)
-		qtype = Sys->QTDIR;
+		qtype = Styx->QTDIR;
 	d.qid = Sys->Qid (path, 0, qtype);
 	d.mode = a.mode&8r777;
 	if(a.ftype == Nfsrpc->FTdir)
-		d.mode |= Sys->DMDIR;
+		d.mode |= Styx->DMDIR;
 	d.atime = a.atime;
 	d.mtime = a.mtime;
 	d.length = a.size;
@@ -319,7 +320,7 @@ dostyx(tm: ref Tmsg): ref Rmsg
 		f := fidtab.find(m.fid);
 		if(f != nil)
 			return styxerror(m, "fid in use");
-		f = ref Fid (m.fid, ref Fh (rootfh, nil, ""), 1, pathgen++, 0, 0, nil, big 0, nil, 0);
+		f = ref Fid (m.fid, ref Fh (rootfh, nil, ""), 1, pathgen++, 0, 0, nil, big 0, nil, 0, big 0);
 		fidtab.add(f.fid, f);
 		return ref Rmsg.Attach (m.tag, f.qid());
 
@@ -333,10 +334,10 @@ dostyx(tm: ref Tmsg): ref Rmsg
 		if(f.isopen)
 			return styxerror(m, "fid is open");
 		if(!f.isdir && len m.names > 0)
-			return styxerror(m, "walk from plain file");
+			return styxerror(m, "walk from non-directory");
 		nf := fidtab.find(m.newfid);
-		if(nf != nil)
-			return styxerror(m, "fid in use");
+		if(m.newfid != m.fid && nf != nil)
+			return styxerror(m, "new fid in use");
 
 		nfh := f.fh.fh;
 		isdir := f.isdir;
@@ -365,7 +366,9 @@ dostyx(tm: ref Tmsg): ref Rmsg
 			if(i+1 < len m.names)
 				nparent = pathcombine(nparent, name);
 		}
-		nf = ref Fid (m.newfid, ref Fh (nfh, nparent, name), isdir, pathgen++, 0, 0, nil, big 0, nil, 0);
+		nf = ref Fid (m.newfid, ref Fh (nfh, nparent, name), isdir, pathgen++, 0, 0, nil, big 0, nil, 0, big 0);
+		if(m.fid == m.newfid)
+			fidtab.del(m.fid);
 		fidtab.add(nf.fid, nf);
 		return ref Rmsg.Walk (m.tag, qids);
 
@@ -374,7 +377,7 @@ dostyx(tm: ref Tmsg): ref Rmsg
 		if(f == nil)
 			return styxerror(m, "no such fid");
 		if(f.isopen)
-			return styxerror(m, "already open");
+			return styxerror(m, "fid already open");
 
 		if(m.mode & Styx->ORCLOSE)
 			return styxerror(m, "ORCLOSE not supported");
@@ -408,7 +411,9 @@ dostyx(tm: ref Tmsg): ref Rmsg
 		f := fidtab.find(m.fid);
 		if(f == nil)
 			return styxerror(m, "no such fid");
-		if(m.name == "." || m.name == "..")
+		if(f.isopen)
+			return styxerror(m, "fid already open");
+		if(m.name == "." || m.name == ".." || m.name == "")
 			return styxerror(m, "bad name");
 		if(m.mode & Styx->ORCLOSE)
 			return styxerror(m, "ORCLOSE not supported");
@@ -418,6 +423,8 @@ dostyx(tm: ref Tmsg): ref Rmsg
 		(access, err) := modeaccess(m.mode);
 		if(err != nil)
 			return styxerror(m, err);
+		if(wantdir && (access & Nfsrpc->ACmodify))
+			return styxerror(m, "cannot create directory with open for writing");
 
 		pa: ref Attr;
 		(pa, err) = nfsgetattr(f.fh);
@@ -443,7 +450,7 @@ dostyx(tm: ref Tmsg): ref Rmsg
 		if(wantdir)
 			qtype = Sys->QTDIR;
 		fidtab.del(m.fid);
-		f = ref Fid (m.fid, ref Fh (nfh, pathcombine(f.fh.parent, f.fh.elem), m.name), wantdir, pathgen++, 0, 0, nil, big 0, nil, 0);
+		f = ref Fid (m.fid, ref Fh (nfh, pathcombine(f.fh.parent, f.fh.elem), m.name), wantdir, pathgen++, 0, 0, nil, big 0, nil, 0, big 0);
 		f.isopen = 1;
 		f.access = access;
 		fidtab.add(f.fid, f);
@@ -462,7 +469,10 @@ dostyx(tm: ref Tmsg): ref Rmsg
 				f.dircookie = big 0;
 				f.dircookieverf = nil;
 				f.direof = 0;
+				f.diroffset = big 0;
 			}
+			if(m.offset != f.diroffset)
+				return styxerror(m, "bad offset");
 			if(!f.direof && len f.entries == 0) {
 				(entries, eof, cookieverf, err) := nfsreaddirplus(f.fh, f.dircookie, f.dircookieverf);
 				if(err != nil)
@@ -511,9 +521,12 @@ dostyx(tm: ref Tmsg): ref Rmsg
 				o += ds;
 			}
 			f.entries = f.entries[i:];
+			f.diroffset += big o;
 			return ref Rmsg.Read (m.tag, buf[:o]);
 		}
 
+		if(m.offset < big 0)
+			return ref Rmsg.Read (m.tag, array[0] of byte);
 		(buf, err) := nfsread(f.fh, m.offset, m.count);
 		if(err != nil)
 			return styxerror(m, err);
@@ -582,6 +595,15 @@ dostyx(tm: ref Tmsg): ref Rmsg
 			return ref Rmsg.Wstat (m.tag);
 		}
 
+		if(d.length != ~big 0 && f.isdir)
+			return styxerror(m, "bad argument, cannot set length of directory");
+		isdir := f.isdir != 0;
+		nisdir := (d.mode & Styx->DMDIR) != 0;
+		if(d.mode != ~0 && isdir^nisdir)
+			return styxerror(m, "cannot change DMDIR");
+		if(d.name == "." || d.name == "..")
+			return styxerror(m, "bad name");
+
 		if(d.name != nil) {
 			if(f.isdir)
 				(pfhbuf, nil, err) := nfslookup(f.fh, "..");
@@ -590,6 +612,9 @@ dostyx(tm: ref Tmsg): ref Rmsg
 			if(err != nil)
 				return styxerror(m, "parent directory: "+err);
 			pfh := ref Fh (pfhbuf, nil, nil);
+			# bug: this is not atomic.  nfs rename (unlike nfs create) cannot check for prior existence.
+			if(nfslookup(pfh, d.name).t0 != nil)
+				return styxerror(m, sprint("%#q already exists", d.name));
 			err = nfsrename(pfh, f.fh.elem, d.name);
 			if(err != nil)
 				return styxerror(m, "rename: "+err);
@@ -1079,7 +1104,7 @@ mnt(tcp: int, host: string, port: int, path: string, auth: Auth): (array of byte
 		pick m := rm {
 		Mnt =>
 			if(m.status != Mntrpc->Eok)
-				return (nil, nil, sprint("mnt, error %d", m.status));
+				return (nil, nil, "mnt, "+mntrpc->error(m.status));
 			return (m.fh, m.auths, nil);
 		* =>
 			return (nil, nil, "mnt, response mismatch");

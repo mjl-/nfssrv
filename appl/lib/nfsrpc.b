@@ -45,35 +45,35 @@ init()
 error(v: int): string
 {
 	case v {
-	Nfsrpc->Eok =>		return "success";
-	Nfsrpc->Eperm =>	return "permission denied";
-	Nfsrpc->Enoent =>	return "file does not exist";
-	Nfsrpc->Eio =>		return "i/o error";
-	Nfsrpc->Enxio =>	return "i/o error, no such device";
-	Nfsrpc->Eacces =>	return "permission denied";
-	Nfsrpc->Eexist =>	return "file already exists";
-	Nfsrpc->Exdev =>	return "bad argument, cross-device hard link";
-	Nfsrpc->Enodev =>	return "file does not exist, no such device";
-	Nfsrpc->Enotdir =>	return "not a directory";
-	Nfsrpc->Eisdir =>	return "bad argument, is a directory";
-	Nfsrpc->Einval =>	return "bad argument";
-	Nfsrpc->Efbig =>	return "file too big";
-	Nfsrpc->Enospc =>	return "no space left";
-	Nfsrpc->Erofs =>	return "permission denied, read-only file system";
-	Nfsrpc->Emlink =>	return "too many hard links";
-	Nfsrpc->Enametoolong =>	return "bad argument, name too long";
-	Nfsrpc->Enotempty =>	return "directory not empty";
-	Nfsrpc->Edquot =>	return "quota exceeded";
-	Nfsrpc->Estale =>	return "stale nfs file handle";
-	Nfsrpc->Eremote =>	return "too many levels of remote";
-	Nfsrpc->Ebadhandle =>	return "invalid nfs file handle";
-	Nfsrpc->Enotsync =>	return "synchronization mismatch";
-	Nfsrpc->Ebadcookie =>	return "bad cookie";
-	Nfsrpc->Enotsupp =>	return "operation not supported";
-	Nfsrpc->Etoosmall =>	return "buffer or request too small";
-	Nfsrpc->Eserverfault =>	return "server fault";
-	Nfsrpc->Ebadtype =>	return "bad type, not supported";
-	Nfsrpc->Ejukebox =>	return "slow jukebox, try again";
+	Eok =>		return "success";
+	Eperm =>	return "permission denied";
+	Enoent =>	return "file does not exist";
+	Eio =>		return "i/o error";
+	Enxio =>	return "i/o error, no such device";
+	Eacces =>	return "permission denied";
+	Eexist =>	return "file already exists";
+	Exdev =>	return "bad argument, cross-device hard link";
+	Enodev =>	return "file does not exist, no such device";
+	Enotdir =>	return "not a directory";
+	Eisdir =>	return "bad argument, is a directory";
+	Einval =>	return "bad argument";
+	Efbig =>	return "file too big";
+	Enospc =>	return "no space left";
+	Erofs =>	return "permission denied, read-only file system";
+	Emlink =>	return "too many hard links";
+	Enametoolong =>	return "bad argument, name too long";
+	Enotempty =>	return "directory not empty";
+	Edquot =>	return "quota exceeded";
+	Estale =>	return "stale nfs file handle";
+	Eremote =>	return "too many levels of remote";
+	Ebadhandle =>	return "invalid nfs file handle";
+	Enotsync =>	return "synchronization mismatch";
+	Ebadcookie =>	return "bad cookie";
+	Enotsupp =>	return "operation not supported";
+	Etoosmall =>	return "buffer or request too small";
+	Eserverfault =>	return "server fault";
+	Ebadtype =>	return "bad type, not supported";
+	Ejukebox =>	return "slow jukebox, try again";
 	* =>
 		return sprint("error, %d", v);
 	}

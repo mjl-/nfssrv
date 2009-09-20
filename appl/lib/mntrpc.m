@@ -44,6 +44,8 @@ Mntrpc: module
 	Enotsupp:	con 10004;
 	Eserverfault:	con 10006;
 
+	error:	fn(status: int): string;
+
 	Export: adt {
 		dir:	string;
 		groups:	array of string;

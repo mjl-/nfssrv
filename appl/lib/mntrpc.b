@@ -25,6 +25,23 @@ init()
 	sunrpc->init();
 }
 
+error(status: int): string
+{
+	case status {
+	Eok =>		return "success";
+	Eperm =>	return "permission denied";
+	Enoent =>	return "file does not exist";
+	Eio =>		return "i/o error";
+	Eaccess =>	return "permission denied";
+	Enotdir =>	return "not a directory";
+	Einval =>	return "bad arguments";
+	Enametoolong =>	return "bad argument, name too long";
+	Enotsupp =>	return "operation not supported";
+	Eserverfault =>	return "server fault";
+	* =>	return sprint("error %d", status);
+	}
+}
+
 Tmnt.size(m: self ref Tmnt): int
 {
 	return m.pack(nil, 0);
