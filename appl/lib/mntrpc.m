@@ -31,6 +31,7 @@ Mntrpc: module
 		size:	fn(m: self ref Tmnt): int;
 		pack:	fn(m: self ref Tmnt, buf: array of byte, o: int): int;
 		unpack:	fn(m: ref Sunrpc->Trpc, buf: array of byte): ref Tmnt raises (Badrpc, Badprog, Badproc, Badprocargs);
+		text:	fn(m: self ref Tmnt): string;
 	};
 
 	Eok:		con 0;
@@ -71,5 +72,6 @@ Mntrpc: module
 		size:	fn(m: self ref Rmnt): int;
 		pack:	fn(m: self ref Rmnt, buf: array of byte, o: int): int;
 		unpack:	fn(tm: ref Sunrpc->Trpc, rm: ref Sunrpc->Rrpc, buf: array of byte): ref Rmnt raises (Badrpc, Badproc, Badprocargs);
+		text:	fn(m: self ref Rmnt): string;
 	};
 };

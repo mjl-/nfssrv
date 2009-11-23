@@ -9,6 +9,9 @@ include "daytime.m";
 	daytime: Daytime;
 include "string.m";
 	str: String;
+include "util0.m";
+	util: Util0;
+	fail, warn, max, hex, kill, killgrp, index: import util;
 include "sunrpc.m";
 	sunrpc: Sunrpc;
 	g32, g64, gopaque, p32, p64, popaque, Authsys: import sunrpc;
@@ -35,7 +38,7 @@ root: string;
 protocol: string;  # nil is both tcp & udp, otherwise it's the protocol specified
 
 regfd: ref Sys->FD;  # global, so we keep a reference until nfssrv dies
-verfcookie := array[8] of {* => byte 0};
+verfcookie := big 0;
 
 nilwd: Weakdata;
 
@@ -47,6 +50,8 @@ init(nil: ref Draw->Context, args: list of string)
 	arg := load Arg Arg->PATH;
 	daytime = load Daytime Daytime->PATH;
 	str = load String String->PATH;
+	util = load Util0 Util0->PATH;
+	util->init();
 	sunrpc = load Sunrpc Sunrpc->PATH;
 	sunrpc->init();
 	mnt = load Mntrpc Mntrpc->PATH;
@@ -63,7 +68,8 @@ init(nil: ref Draw->Context, args: list of string)
 		'm' =>	mntport = int arg->earg();
 		'p' =>
 			case protocol = arg->earg() {
-			"udp" or "tcp" =>
+			"udp" or
+			"tcp" =>
 				;
 			* =>
 				arg->usage();
@@ -101,7 +107,7 @@ init(nil: ref Draw->Context, args: list of string)
 	if(protocol != "tcp" && sys->fprint(regfd, "add %d %d udp %d\n", nfs->ProgNfs, nfs->VersNfs, nfsport) < 0)
 		failall(sprint("registering nfs udp: %r"));
 
-	p64(verfcookie, 0, (big sys->millisec()<<32)|big daytime->now());
+	verfcookie = (big sys->millisec()<<32)|big daytime->now();
 	initfh();
 
 	spawn listen(nfsport, nfssrv);
@@ -117,10 +123,11 @@ Fh: adt {
 };
 
 Dh: adt {
-	cookie:	big;
 	fd:	ref Sys->FD;
-	dirs:	array of Sys->Dir;
-	off:	int;
+	ocookies,
+	cookies:	array of big;	# consecutive numbers
+	odirs,
+	dirs:		array of Sys->Dir;
 };
 
 # nfs requires the server to cache file handles, but allows the server to invalidate them at any time.
@@ -198,7 +205,7 @@ fhget(fhbuf: array of byte): string
 		}
 	}
 	fhunlock();
-say(sprint("fhget, fh %s -> path %q", hex(fhbuf), path));
+if(dflag) say(sprint("fhget, fh %s -> path %q", hex(fhbuf), path));
 	return path;
 }
 
@@ -252,12 +259,12 @@ fhput(path: string): array of byte
 		filehandles[oldest].path = path;
 		if(++fhusegen < 0)
 			fhusegen = 1;
-		filehandles[i].gen = fhusegen;
+		filehandles[oldest].gen = fhusegen;
 
 		fh = pfh(filehandles[oldest].fh);
 	}
 	fhunlock();
-say(sprint("fhput, path %q, base %x -> fh %s", path, base, hex(fh)));
+if(dflag) say(sprint("fhput, path %q, base %x -> fh %s", path, base, hex(fh)));
 	return fh;
 }
 
@@ -270,64 +277,103 @@ pathhash(p: string): int
 }
 
 
-dirdel(cookie: big)
+dirdel(dh: ref Dh)
 {
-say(sprint("dirdel, cookie %bd", cookie));
+if(dflag) say("dirdel");
 	nl: list of ref Dh;
 	for(l := dirhandles; l != nil; l = tl l)
-		if((hd l).cookie != cookie)
+		if(hd l != dh)
 			nl = hd l::nl;
 	dirhandles = nl;
 }
 
 dirput(fd: ref Sys->FD): ref Dh
 {
-	dh := ref Dh (dircookiegen++, fd, nil, 0);
+	dh := ref Dh (fd, nil, nil, nil, nil);
 	dirhandles = dh::dirhandles;
-say(sprint("dirput, new cookie %bd", dh.cookie));
+if(dflag) say("dirput");
 	return dh;
 }
 
-dirget(a: ref Attr, cookie: big): ref Dh
+dirfind(dh: ref Dh, cookie: big): int
 {
-say(sprint("dirget, cookie %bd", cookie));
-	if(a == nil) {
-		dirdel(cookie);
-		return nil;
-	}
-	for(l := dirhandles; l != nil; l = tl l)
-		if((hd l).cookie == cookie) {
-say(sprint("dirget, cookie %bd, hit", cookie));
-			return hd l;
+	i := dirmatch(dh.ocookies, cookie);
+	if(i >= 0)
+		return i;
+	i = dirmatch(dh.cookies, cookie);
+	if(i >= 0)
+		return len dh.ocookies+i;
+	return -1;
+}
+
+dirmatch(cookies: array of big, cookie: big): int
+{
+	if(len cookies == 0 || cookie < cookies[0] || cookie > cookies[len cookies-1])
+		return -1;
+	return int (cookie-cookies[0]);
+}
+
+dirindex(dh: ref Dh, i: int): (big, Sys->Dir)
+{
+	if(i < 0)
+		raise "bad index";
+	if(i < len dh.odirs)
+		return (dh.ocookies[i], dh.odirs[i]);
+	i -= len dh.odirs;
+	if(i < len dh.dirs)
+		return (dh.cookies[i], dh.dirs[i]);
+	raise "bad index";
+}
+
+dirget(cookie: big): ref Dh
+{
+if(dflag) say(sprint("dirget, cookie %bux", cookie));
+	for(l := dirhandles; l != nil; l = tl l) {
+		dh := hd l;
+		if(dirfind(dh, cookie) >= 0) {
+if(dflag) say(sprint("dirget, cookie %bux, hit", cookie));
+			return dh;
 		}
-say(sprint("dirget, cookie %bd, miss", cookie));
+	}
+if(dflag) say(sprint("dirget, cookie %bux, miss", cookie));
 	return nil;
 }
 
-dirnext(dh: ref Dh): (int, ref Sys->Dir)
+dirnext(dh: ref Dh, cookie: big): (int, big, Sys->Dir)
 {
-	if(dh.off >= len dh.dirs) {
-		dh.off = 0;
+	if(len dh.cookies == 0 || dh.cookies[len dh.cookies-1] == cookie) {
+		(dh.ocookies, dh.odirs) = (dh.cookies, dh.dirs);
 		n: int;
 		(n, dh.dirs) = sys->dirread(dh.fd);
-say(sprint("dirnext, dirread gave %d dirs (%d)", len dh.dirs, n));
+if(dflag) say(sprint("dirnext, dirread gave %d dirs (%d)", len dh.dirs, n));
 		if(n <= 0)
-			return (0, nil);
+			return (n, big -1, sys->zerodir);
+		dh.cookies = array[len dh.dirs] of big;
+		for(i := 0; i < len dh.dirs; i++)
+			dh.cookies[i] = ++dircookiegen;
+		return (1, dh.cookies[0], dh.dirs[0]);
 	}
-	dh.cookie = dircookiegen++;
-	d := ref dh.dirs[dh.off++];
-say(sprint("dirnext, have dir elem %q, new cookie %bd", d.name, dh.cookie));
-	return (0, d);
+
+	i := dirfind(dh, cookie);
+	if(i < 0)
+		return (0, big -1, sys->zerodir);
+	if(i+1 >= len dh.odirs+len dh.dirs)
+		return (1, big -1, sys->zerodir);
+	(ncookie, dir) := dirindex(dh, i+1);
+	if(ncookie == cookie)
+		raise "bogus";
+if(dflag) say(sprint("dirnext, have dir elem %q.  orig cookie %bux i %d, new cookie %bux i %d", dir.name, cookie, i, ncookie, i+1));
+	return (1, ncookie, dir);
 }
 
 parent(p: string): string
 {
-say(sprint("parent() for p %q", p));
+if(dflag) say(sprint("parent() for p %q", p));
 	if(p == "/")
 		return p;
 	p = str->splitstrr(p, "/").t0;
-	if(p == nil)
-		p = "/";
+	if(p != "/")
+		p = p[:len p-1];
 	return p;
 }
 
@@ -373,20 +419,22 @@ sattr2dir(s: Sattr): (Sys->Dir, int)
 
 getdir(cookie: big, attr: ref Attr, path: string): (ref Dh, int)
 {
+	if(attr == nil)
+		return (nil, nfs->Estale);
 	if(cookie == big 0) {
-say("t.cookie == 0, opening dir");
+if(dflag) say("cookie == 0, opening dir");
 		dfd := sys->open(path, Sys->OREAD);
 		if(dfd == nil) {
-say(sprint("readdir, open path %q failed: %r", path));
+if(dflag) say(sprint("readdir, open path %q failed: %r", path));
 			return (nil, errno());
 		}
 		return (dirput(dfd), nfs->Eok);
 	}
 
-say("dir already open, using cookie");
-	dh := dirget(attr, cookie);
+if(dflag) say("dir already open, using cookie");
+	dh := dirget(cookie);
 	if(dh == nil) {
-say(sprint("readdir, old cookie"));
+if(dflag) say(sprint("readdir, old cookie"));
 		return (nil, nfs->Ebadcookie);
 	}
 	return (dh, nfs->Eok);
@@ -472,7 +520,7 @@ mntsrv(fd: ref Sys->FD)
 
 mnttransact(buf, pre: array of byte, fd: ref Sys->FD): string
 {
-	say("mnttransact");
+	if(dflag) say("mnttransact");
 	as: ref Authsys;
 	tt: ref Tmnt;
 	{
@@ -489,7 +537,7 @@ mnttransact(buf, pre: array of byte, fd: ref Sys->FD): string
 		return "parsing request: "+e;
 	}
 
-	say("have mnt request");
+	say("-> "+tt.text());
 
 	if(tagof tt != tagof Tnfs.Null && as == nil) {
 		rbadauth := ref Rrpc.Autherror (tt.r.xid, sunrpc->AUtooweak);
@@ -525,7 +573,7 @@ mnttransact(buf, pre: array of byte, fd: ref Sys->FD): string
 	* =>
 		raise "internal error";
 	}
-	say("have mnt response");
+	say("<- "+r.text());
 	return sunrpc->writerpc(fd, pre, pre==nil, r);
 }
 
@@ -548,7 +596,6 @@ nfssrv(fd: ref Sys->FD)
 
 nfstransact(buf, pre: array of byte, fd: ref Sys->FD): string
 {
-	say("nfstransact");
 	as: ref Authsys;
 	tt: ref Tnfs;
 	{
@@ -564,7 +611,7 @@ nfstransact(buf, pre: array of byte, fd: ref Sys->FD): string
 		return "parsing request: "+e;
 	}
 
-	say("nfs request: "+tt.text());
+	say("<- "+tt.text());
 
 	if(tagof tt != tagof Tnfs.Null && as == nil) {
 		rbadauth := ref Rrpc.Autherror (tt.r.xid, sunrpc->AUtooweak);
@@ -632,13 +679,13 @@ Top:
 		rr = r := ref Rnfs.Lookup;
 		dirpath := fhget(t.where.fh);
 		if(dirpath == nil) {
-say(sprint("lookup, stale fh %s", hex(t.where.fh)));
+if(dflag) say(sprint("lookup, stale fh %s", hex(t.where.fh)));
 			r.r = ref Rlookup.Fail (nfs->Estale, nil);
 			break;
 		}
 		dirattr := getattr(dirpath).t0;
 		npath: string;
-say(sprint("lookup, dirpath %q, name %q", dirpath, t.where.name));
+if(dflag) say(sprint("lookup, dirpath %q, name %q", dirpath, t.where.name));
 		case t.where.name {
 		"" =>
 			r.r = ref Rlookup.Fail (nfs->Einval, dirattr);
@@ -650,7 +697,7 @@ say(sprint("lookup, dirpath %q, name %q", dirpath, t.where.name));
 		* =>
 			npath = makepath(dirpath, t.where.name);
 		}
-say(sprint("lookup, dirpath %q, name %q, npath %q", dirpath, t.where.name, npath));
+if(dflag) say(sprint("lookup, dirpath %q, name %q, npath %q", dirpath, t.where.name, npath));
 		(fattr, status) := getattr(npath);
 		if(fattr == nil) {
 			r.r = ref Rlookup.Fail (status, dirattr);
@@ -682,19 +729,19 @@ say(sprint("lookup, dirpath %q, name %q, npath %q", dirpath, t.where.name, npath
 				perm = dir.mode>>3;
 			else
 				perm = dir.mode;
-			say(sprint("mode 8r%uo, uid %q gid %q uname %q, perm 8r%uo", dir.mode, dir.uid, dir.gid, uname, perm));
+			if(dflag) say(sprint("mode 8r%uo, uid %q gid %q uname %q, perm 8r%uo", dir.mode, dir.uid, dir.gid, uname, perm));
 			perm &= (1<<3)-1;
 			br := bw := bx := 0;
 			if(perm&8r4) br = ~0;
 			if(perm&8r2) bw = ~0;
 			if(perm&8r1) bx = ~0;
-			say(sprint("perm 8r%uo, br %ux bw %ux Bx %ux", perm, br, bw, bx));
+			if(dflag) say(sprint("perm 8r%uo, br %ux bw %ux Bx %ux", perm, br, bw, bx));
 			access |= nfs->ACread&br;
 			access |= (nfs->ACmodify|nfs->ACextend|nfs->ACdelete)&bw;
 			access |= (nfs->AClookup|nfs->ACexecute)&bx;
 		} else
-			say(sprint("stat %q failed: %r", path));
-say(sprint("access, path %q, access 0x%x (requested 0x%x", path, access, t.access));
+			if(dflag) say(sprint("stat %q failed: %r", path));
+if(dflag) say(sprint("access, path %q, access 0x%x (requested 0x%x", path, access, t.access));
 		r.r = ref Raccess.Ok (getattr(path).t0, access);
 
 	Readlink =>
@@ -829,7 +876,7 @@ say(sprint("access, path %q, access 0x%x (requested 0x%x", path, access, t.acces
 			perm = t.attr.mode&8r777;
 		nfd := sys->create(npath, Sys->OREAD|Sys->OEXCL, Sys->DMDIR|perm);
 		if(nfd == nil) {
-say(sprint("create dir %q: %r", npath));
+if(dflag) say(sprint("create dir %q: %r", npath));
 			e.status = errno();
 			break;
 		}
@@ -936,7 +983,7 @@ say(sprint("create dir %q: %r", npath));
 		rr = r := ref Rnfs.Readdir;
 		path := fhget(t.fh);
 		if(path == nil) {
-say("readdir, stale");
+if(dflag) say("readdir, stale");
 			r.r = ref Rreaddir.Fail (nfs->Estale, nil);
 			break;
 		}
@@ -949,26 +996,29 @@ say("readdir, stale");
 
 		eof := 0;
 		entries: list of Entry;
+		cookie := t.cookie;
 		for(n := 0; n < 16; n++) {  # xxx go on until no more
-			(ok, dir) := dirnext(dh);
+			(ok, ncookie, dir) := dirnext(dh, cookie);
 			if(ok < 0) {
-say("dirnext failed");
+if(dflag) say("dirnext failed");
 				r.r = ref Rreaddir.Fail (errno(), nil);
-				dirdel(dh.cookie);
+				dirdel(dh);
 				break Top;
 			}
-			if(dir == nil) {
-say("end of dir reached");
+			if(ncookie < big 0) {
+if(dflag) say("end of dir reached");
 				eof = 1;
-				dirdel(dh.cookie);
+				dirdel(dh);
 				break;
 			}
 			# if(!nfs->readdirfits(...))
 			# dirunnext(dh, entry);
-			e := Entry (dir.qid.path, dir.name, dh.cookie);
+			e := Entry (dir.qid.path, dir.name, ncookie);
 			entries = e::entries;
+			cookie = ncookie;
+if(dflag) say(e.text());
 		}
-say(sprint("readdir, len entries %d, eof %d", len entries, eof));
+if(dflag) say(sprint("readdir, len entries %d, eof %d", len entries, eof));
 		ents := array[len entries] of Entry;
 		i := len entries-1;
 		for(; entries != nil; entries = tl entries)
@@ -979,7 +1029,7 @@ say(sprint("readdir, len entries %d, eof %d", len entries, eof));
 		rr = r := ref Rnfs.Readdirplus;
 		path := fhget(t.fh);
 		if(path == nil) {
-say("readdirplus, stale");
+if(dflag) say("readdirplus, stale");
 			r.r = ref Rreaddirplus.Fail (nfs->Estale, nil);
 			break;
 		}
@@ -992,18 +1042,19 @@ say("readdirplus, stale");
 
 		eof := 0;
 		entries: list of Entryplus;
+		cookie := t.cookie;
 		for(n := 0; n < 6; n++) {  # xxx go on until no more
-			(ok, dir) := dirnext(dh);
+			(ok, ncookie, dir) := dirnext(dh, cookie);
 			if(ok < 0) {
-say("dirnext failed");
+if(dflag) say("dirnext failed");
 				r.r = ref Rreaddirplus.Fail (errno(), nil);
-				dirdel(dh.cookie);
+				dirdel(dh);
 				break Top;
 			}
-			if(dir == nil) {
-say("end of dir reached");
+			if(ncookie < big 0) {
+if(dflag) say("end of dir reached");
 				eof = 1;
-				dirdel(dh.cookie);
+				dirdel(dh);
 				break;
 			}
 			# if(!nfs->readdirfits(...))
@@ -1014,10 +1065,12 @@ say("end of dir reached");
 			# but linux' in-kernel nfs client seems to treat absent file handles as zero-length file handles,
 			# so include a file handle to help linux clients.
 			npath := makepath(path, dir.name);
-			e := Entryplus (dir.qid.path, dir.name, dh.cookie, getattr(npath).t0, fhput(npath));
+			e := Entryplus (dir.qid.path, dir.name, ncookie, getattr(npath).t0, fhput(npath));
 			entries = e::entries;
+			cookie = ncookie;
+if(dflag) say(e.text());
 		}
-say(sprint("readdirplus, len entries %d, eof %d", len entries, eof));
+if(dflag) say(sprint("readdirplus, len entries %d, eof %d", len entries, eof));
 		ents := array[len entries] of Entryplus;
 		i := len entries-1;
 		for(; entries != nil; entries = tl entries)
@@ -1095,7 +1148,7 @@ say(sprint("readdirplus, len entries %d, eof %d", len entries, eof));
 		raise "internal error";
 	}
 	rr.m = rok;
-	say("have nfs response");
+	if(dflag) say("-> "+rr.text());
 	return sunrpc->writerpc(fd, pre, pre==nil, rr);
 }
 
@@ -1126,9 +1179,11 @@ getattr(p: string): (ref Attr, int)
 	a.rdev.minor = 0;
 	a.fsid = (big dir.dtype<<32)|(big dir.dev);
 	a.fileid = dir.qid.path;
+	if(a.fileid == big 0)
+		a.fileid = ~big 0;  # nfs warns against using 0 as fileid
 	a.atime = dir.atime;
 	a.mtime = a.ctime = dir.mtime;
-say(sprint("getattr path %q, type %s, mode %o size %bd", p, fstypes[a.ftype], a.mode, a.size));
+if(dflag) say(sprint("getattr path %q, type %s, mode %o size %bud", p, fstypes[a.ftype], a.mode, a.size));
 	return (a, 0);
 }
 
@@ -1136,7 +1191,7 @@ errno(): int
 {
 	s := sprint("%r");
 	v := errno0(s);
-say(sprint("errno, s %q, v %d", s, v));
+if(dflag) say(sprint("errno, s %q, v %d", s, v));
 	return v;
 }
 
@@ -1156,55 +1211,9 @@ errnomap := array[] of {
 errno0(s: string): int
 {
 	for(i := 0; i < len errnomap; i++)
-		if(substr(errnomap[i].t1, s))
+		if(index(errnomap[i].t1, s))
 			return errnomap[i].t0;
 	return nfs->Eserverfault;
-}
-
-substr(sub, s: string): int
-{
-	for(i := 0; i <= len s-len sub; i++)
-		if(s[i:i+len sub] == sub)
-			return 1;
-	return 0;
-}
-
-progctl(pid: int, s: string)
-{
-	p := sprint("/prog/%d/ctl", pid);
-	fd := sys->open(p, Sys->OWRITE);
-	if(fd != nil)
-		sys->fprint(fd, "%s", s);
-}
-
-kill(pid: int)
-{
-	progctl(pid, "kill");
-}
-
-killgrp(pid: int)
-{
-	progctl(pid, "killgrp");
-}
-
-hex(d: array of byte): string
-{
-	s := "";
-	for(i := 0; i < len d; i++)
-		s += sprint("%02x", int d[i]);
-	return s;
-}
-
-max(a, b: int): int
-{
-	if(a > b)
-		return a;
-	return b;
-}
-
-warn(s: string)
-{
-	sys->fprint(sys->fildes(2), "%s\n", s);
 }
 
 say(s: string)
@@ -1217,11 +1226,5 @@ failall(s: string)
 {
 	warn(s);
 	killgrp(sys->pctl(0, nil));
-	raise "fail:"+s;
-}
-
-fail(s: string)
-{
-	warn(s);
 	raise "fail:"+s;
 }

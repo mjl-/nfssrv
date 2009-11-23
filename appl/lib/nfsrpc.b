@@ -79,6 +79,92 @@ error(v: int): string
 	}
 }
 
+Time.text(t: self Time): string
+{
+	return sprint("%d,%d", t.secs, t.nsecs);
+}
+
+Attr.text(w: self ref Attr): string
+{
+	if(w == nil)
+		return "nil";
+	return sprint("Attr(ftype %d, mode %uo, nlink %d, uid %d, gid %d, size %bud, used %bud, rdev %d,%d, fsid %bux, fileid %bux, atime %d, mtime %d, ctime %d)", w.ftype, w.mode, w.nlink, w.uid, w.gid, w.size, w.used, w.rdev.major, w.rdev.minor, w.fsid, w.fileid, w.atime, w.mtime, w.ctime);
+}
+
+Weakattr.text(w: self ref Weakattr): string
+{
+	if(w == nil)
+		return "nil";
+	return sprint("Weakattr (size %bud, mtime %d, ctime %d)", w.size, w.mtime, w.ctime);
+}
+
+Weakdata.text(w: self Weakdata): string
+{
+	return sprint("Weakdata (before %s, after %s)", w.before.text(), w.after.text());
+}
+
+Sattr.text(s: self Sattr): string
+{
+	r := "";
+	if(s.setmode) r += sprint(", mode %uo", s.mode);
+	if(s.setuid) r += sprint(", uid %d", s.uid);
+	if(s.setgid) r += sprint(", gid %d", s.gid);
+	if(s.setsize) r += sprint(", size %bud", s.size);
+	if(s.setatime) r += sprint(", setatime %d %d", s.setatime, s.atime);
+	if(s.setmtime) r += sprint(", setmtime %d %d", s.setmtime, s.mtime);
+	if(r != nil)
+		r = r[1:];
+	return "Sattr("+r+")";
+}
+
+Dirargs.text(d: self Dirargs): string
+{
+	return sprint("Dirargs(fh %s, name %q)", hex(d.fh), d.name);
+}
+
+nodtagnames := array[] of {"Chr", "Blk", "Sock", "Fifo", "Reg", "Dir", "Lnk"};
+Nod.text(nn: self ref Nod): string
+{
+	s := sprint("Nod.%s(", nodtagnames[tagof nn]);
+	pick n := nn {
+	Chr or
+	Blk =>	s += sprint("attr %s, spec %d,%d", n.attr.text(), n.spec.major, n.spec.minor);
+	Sock or
+	Fifo =>	s += sprint("attr %s", n.attr.text());
+	Reg or
+	Dir or
+	Lnk =>	;
+	* =>
+		raise "missing case";
+	}
+	s += ")";
+	return s;
+}
+
+createhowtagnames := array[] of {"Unchecked", "Guarded", "Exclusive"};
+Createhow.text(nn: self ref Createhow): string
+{
+	s := sprint("Createhow.%s(", createhowtagnames[tagof nn]);
+	pick n := nn {
+	Unchecked or
+	Guarded =>	s += sprint("attr %s", n.attr.text());
+	Exclusive =>	s += sprint("createverf %bux", n.createverf);
+	}
+	s += ")";
+	return s;
+}
+
+Entry.text(e: self Entry): string
+{
+	return sprint("Entry(id %bux, name %q, cookie %bux)", e.id, e.name, e.cookie);
+}
+
+Entryplus.text(e: self Entryplus): string
+{
+	return sprint("Entryplus(id %bux, name %q, cookie %bux, attr %s, fh %s)", e.id, e.name, e.cookie, e.attr.text(), hex(e.fh));
+}
+
+
 Tnfs.size(m: self ref Tnfs): int
 {
 	return m.pack(nil, 0);
@@ -143,16 +229,12 @@ Tnfs.pack(mm: self ref Tnfs, buf: array of byte, o: int): int
 	Readdir =>
 		o = popaque(buf, o, m.fh);
 		o = p64(buf, o, m.cookie);
-		if(len m.cookieverf != Verfsize)
-			raise "bad args";
-		o = popaquefixed(buf, o, m.cookieverf);
+		o = p64(buf, o, m.cookieverf);
 		o = p32(buf, o, m.count);
 	Readdirplus =>
 		o = popaque(buf, o, m.fh);
 		o = p64(buf, o, m.cookie);
-		if(len m.cookieverf != Verfsize)
-			raise "bad args";
-		o = popaquefixed(buf, o, m.cookieverf);
+		o = p64(buf, o, m.cookieverf);
 		o = p32(buf, o, m.dircount);
 		o = p32(buf, o, m.maxcount);
 	Fsstat =>
@@ -267,13 +349,13 @@ Tnfs.unpack(m: ref Trpc, buf: array of byte): ref Tnfs raises (Badrpc, Badprog, 
 			tt = t := ref Tnfs.Readdir;
 			(t.fh, o) = gfilehandle(buf, o);
 			(t.cookie, o) = g64(buf, o);
-			(t.cookieverf, o) = gopaquefixed(buf, o, Verfsize);
+			(t.cookieverf, o) = g64(buf, o);
 			(t.count, o) = g32(buf, o);
 		Mreaddirplus =>
 			tt = t := ref Tnfs.Readdirplus;
 			(t.fh, o) = gfilehandle(buf, o);
 			(t.cookie, o) = g64(buf, o);
-			(t.cookieverf, o) = gopaquefixed(buf, o, Verfsize);
+			(t.cookieverf, o) = g64(buf, o);
 			(t.dircount, o) = g32(buf, o);
 			(t.maxcount, o) = g32(buf, o);
 		Mfsstat =>
@@ -326,8 +408,8 @@ Tnfs.text(mm: self ref Tnfs): string
 	Lookup =>	s += wheretext(m.where);
 	Access =>	s += "fh "+hex(m.fh)+sprint(" access 0x%x", m.access);
 	Readlink =>	s += "fh "+hex(m.fh);
-	Read =>		s += "fh "+hex(m.fh)+sprint(" offset %bd count %d", m.offset, m.count);
-	Write =>	s += "fh "+hex(m.fh)+sprint(" offset %bd count %d", m.offset, m.count);
+	Read =>		s += "fh "+hex(m.fh)+sprint(" offset %bud count %d", m.offset, m.count);
+	Write =>	s += "fh "+hex(m.fh)+sprint(" offset %bud count %d", m.offset, m.count);
 	Create =>	s += wheretext(m.where);
 	Mkdir =>	s += wheretext(m.where);
 	Symlink =>	s += wheretext(m.where)+sprint(" path %q", m.path);
@@ -341,7 +423,7 @@ Tnfs.text(mm: self ref Tnfs): string
 	Fsstat =>	s += "fh "+hex(m.rootfh);
 	Fsinfo =>	s += "fh "+hex(m.rootfh);
 	Pathconf =>	s += "fh "+hex(m.fh);
-	Commit =>	s += "fh "+hex(m.fh)+sprint(" offset %bd count %d", m.offset, m.count);;
+	Commit =>	s += "fh "+hex(m.fh)+sprint(" offset %bud count %d", m.offset, m.count);;
 	}
 	s += ")";
 	return s;
@@ -429,9 +511,7 @@ Rnfs.pack(mm: self ref Rnfs, buf: array of byte, o: int): int
 				raise sprint("bad Rnfs.Write.Ok, unknown stable %d", r.stable);
 			}
 			o = p32(buf, o, r.stable);
-			if(len r.verf != Verfsize)
-				raise "bad Rnfs.Write";
-			o = popaquefixed(buf, o, r.verf);
+			o = p64(buf, o, r.verf);
 		Fail =>
 			o = p32(buf, o, r.status);
 			o = pweakdata(buf, o, r.weak);
@@ -469,9 +549,7 @@ Rnfs.pack(mm: self ref Rnfs, buf: array of byte, o: int): int
 		Ok =>
 			o = p32(buf, o, Eok);
 			o = pboolattr(buf, o, r.attr);
-			if(len r.cookieverf != Verfsize)
-				raise "bad Rnfs.Readdir";
-			o = popaquefixed(buf, o, r.cookieverf);
+			o = p64(buf, o, r.cookieverf);
 			for(i := 0; i < len r.dir; i++) {
 				o = pbool(buf, o, 1);
 				e := r.dir[i];
@@ -490,9 +568,7 @@ Rnfs.pack(mm: self ref Rnfs, buf: array of byte, o: int): int
 		Ok =>
 			o = p32(buf, o, Eok);
 			o = pboolattr(buf, o, r.attr);
-			if(len r.cookieverf != Verfsize)
-				raise "bad Rnfs.Readdirplus";
-			o = popaquefixed(buf, o, r.cookieverf);
+			o = p64(buf, o, r.cookieverf);
 			for(i := 0; i < len r.dir; i++) {
 				o = p32(buf, o, 1);
 				e := r.dir[i];
@@ -568,9 +644,7 @@ Rnfs.pack(mm: self ref Rnfs, buf: array of byte, o: int): int
 		Ok =>
 			o = p32(buf, o, Eok);
 			o = pweakdata(buf, o, r.weak);
-			if(len r.writeverf != Verfsize)
-				raise "bad Rnfs.Commit";
-			o = popaquefixed(buf, o, r.writeverf);
+			o = p64(buf, o, r.writeverf);
 		Fail =>
 			o = p32(buf, o, r.status);
 			o = pweakdata(buf, o, r.weak);
@@ -669,7 +743,7 @@ Rnfs.unpack(tm: ref Sunrpc->Trpc, rm: ref Sunrpc->Rrpc, buf: array of byte): ref
 				rr.weak = wd;
 				(rr.count, o) = g32(buf, o);
 				(rr.stable, o) = g32(buf, o);
-				(rr.verf, o) = gopaquefixed(buf, o, Verfsize);
+				(rr.verf, o) = g64(buf, o);
 				r = ref Rnfs.Write (rm, rr);
 			} else
 				r = ref Rnfs.Write (rm, ref Rwrite.Fail (status, wd));
@@ -736,7 +810,7 @@ Rnfs.unpack(tm: ref Sunrpc->Trpc, rm: ref Sunrpc->Rrpc, buf: array of byte): ref
 			if(status == Eok) {
 				rr := ref Rreaddir.Ok;
 				rr.attr = a;
-				(rr.cookieverf, o) = gopaquefixed(buf, o, Verfsize);
+				(rr.cookieverf, o) = g64(buf, o);
 				l: list of Entry;
 				for(;;) {
 					more: int;
@@ -767,7 +841,7 @@ Rnfs.unpack(tm: ref Sunrpc->Trpc, rm: ref Sunrpc->Rrpc, buf: array of byte): ref
 			if(status == Eok) {
 				rr := ref Rreaddirplus.Ok;
 				rr.attr = a;
-				(rr.cookieverf, o) = gopaquefixed(buf, o, Verfsize);
+				(rr.cookieverf, o) = g64(buf, o);
 				l: list of Entryplus;
 				for(;;) {
 					more: int;
@@ -864,8 +938,8 @@ Rnfs.unpack(tm: ref Sunrpc->Trpc, rm: ref Sunrpc->Rrpc, buf: array of byte): ref
 			wd: Weakdata;
 			(wd, o) = gweakdata(buf, o);
 			if(status == Eok) {
-				rr := ref Rcommit.Ok (wd, nil);
-				(rr.writeverf, o) = gopaquefixed(buf, o, Verfsize);  
+				rr := ref Rcommit.Ok (wd, big 0);
+				(rr.writeverf, o) = g64(buf, o);
 				r = ref Rnfs.Commit (rm, rr);
 			} else {
 				rr := ref Rcommit.Fail (status, wd);
@@ -885,6 +959,98 @@ Rnfs.unpack(tm: ref Sunrpc->Trpc, rm: ref Sunrpc->Rrpc, buf: array of byte): ref
 	Badprocargs =>
 		raise;
 	}
+}
+
+rnfstagnames := array[] of {
+"Null", "Getattr", "Setattr", "Lookup", "Access", "Readlink", "Read", "Write",
+"Create", "Mkdir", "Symlink", "Mknod", "Remove", "Rmdir", "Rename", "Link",
+"Readdir", "Readdirplus", "Fsstat", "Fsinfo", "Pathconf", "Commit",
+};
+Rnfs.text(mm: self ref Rnfs): string
+{
+	s := sprint("Rnfs.%s(", rnfstagnames[tagof mm]);
+	pick m := mm {
+	Null =>		;
+	Getattr =>
+		pick r := m.r {
+		Ok =>	s += sprint("attr %s", (ref r.attr).text());
+		Fail =>	s += sprint("status %d", r.status);
+		}
+	Setattr =>
+		s += sprint("status %d, weak %s", m.status, m.weak.text());
+	Lookup =>
+		pick r := m.r {
+		Ok =>	s += sprint("fh %s, fhattr %s, dirattr %s", hex(r.fh), r.fhattr.text(), r.dirattr.text());
+		Fail =>	s += sprint("status %d, dirattr %s", r.status, r.dirattr.text());
+		}
+	Access =>
+		pick r := m.r {
+		Ok =>	s += sprint("attr %s, access %#ux", r.attr.text(), r.access);
+                Fail =>	s += sprint("status %d, attr %s", r.status, r.attr.text());
+                }
+	Readlink =>
+		pick r := m.r {
+		Ok =>	s += sprint("attr %s, path %q", r.attr.text(), r.path);
+		Fail =>	s += sprint("status %d, attr %s", r.status, r.attr.text());
+		}
+	Read =>
+		pick r := m.r {
+		Ok =>	s += sprint("attr %s, count %d, eof %d, len data %d", r.attr.text(), r.count, r.eof, len r.data);
+		Fail =>	s += sprint("status %d, attr %s", r.status, r.attr.text());
+		}
+	Write =>
+		pick r := m.r {
+		Ok =>	s += sprint("weak %s, count %d, stable %d, verf %bux", r.weak.text(), r.count, r.stable, r.verf);
+		Fail =>	s += sprint("status %d, weak %s", r.status, r.weak.text());
+		}
+	Create or
+	Mkdir or
+	Symlink or
+	Mknod =>
+		pick r := m.r {
+		Ok =>	s += sprint("fh %s, attr %s, weak %s", hex(r.fh), r.attr.text(), r.weak.text());
+		Fail =>	s += sprint("status %d, weak %s", r.status, r.weak.text());
+		}
+	Remove or
+	Rmdir =>
+		s += sprint("status %d, weak %s", m.status, m.weak.text());
+	Rename =>
+		s += sprint("status %d, fromdir %s, todir %s", m.status, m.fromdir.text(), m.todir.text());
+	Link =>
+		s += sprint("status %d, attr %s, weak %s", m.status, m.attr.text(), m.weak.text());
+	Readdir =>
+		pick r := m.r {
+		Ok =>	s += sprint("attr %s, cookieverf %bux, len dirs %d, eof %d", r.attr.text(), r.cookieverf, len r.dir, r.eof);
+		Fail =>	s += sprint("status %d, attr %s", r.status, r.attr.text());
+		}
+	Readdirplus =>
+		pick r := m.r {
+		Ok =>	s += sprint("attr %s, cookieverf %bux, len dirs %d, eof %d", r.attr.text(), r.cookieverf, len r.dir, r.eof);
+		Fail =>	s += sprint("status %d, attr %s", r.status, r.attr.text());
+		}
+	Fsstat =>
+		pick r := m.r {
+		Ok =>	s += sprint("attr %s, bytes t %bud, f %bud, a %bud, files t %bud, f %bud, a %bud, invarsec %d", r.attr.text(), r.tbytes, r.fbytes, r.abytes, r.tfiles, r.ffiles, r.afiles, r.invarsec);
+		Fail =>	s += sprint("status %d, attr %s", r.status, r.attr.text());
+		}
+	Fsinfo =>
+		pick r := m.r {
+		Ok =>	s += sprint("attr %s, rtmax %d, rtpref %d, rtmult %d, wtmax %d, wtpref %d, wtmult %d, dtpref %d, maxfilesize %bud, timedelta %s, props %d", r.attr.text(), r.rtmax, r.rtpref, r.rtmult, r.wtmax, r.wtpref, r.wtmult, r.dtpref, r.maxfilesize, r.timedelta.text(), r.props);
+		Fail =>	s += sprint("status %d, attr %s", r.status, r.attr.text());
+		}
+	Pathconf =>
+		pick r := m.r {
+		Ok =>	s += sprint("attr %s, linkmax %d, namemax %d, notrunc %d, chownrestr %d, caseinsens %d, casepres %d", r.attr.text(), r.linkmax, r.namemax, r.notrunc, r.chownrestr, r.caseinsens, r.casepres);
+		Fail =>	s += sprint("status %d, attr %s", r.status, r.attr.text());
+		}
+	Commit =>
+		pick r := m.r {
+		Ok =>	s += sprint("weak %s, writeverf %bux", r.weak.text(), r.writeverf);
+		Fail =>	s += sprint("status %d, weak %s", r.status, r.weak.text());
+		}
+	}
+	s += ")";
+	return s;
 }
 
 pboolattr(buf: array of byte, o: int, a: ref Attr): int
@@ -1128,7 +1294,7 @@ gcreatehow(buf: array of byte, o: int): (ref Createhow, int) raises Parse
 			(c.attr, o) = gsattr(buf, o);
 		CreateExclusive =>
 			cc = c := ref Createhow.Exclusive;
-			(c.createverf, o) = gopaquefixed(buf, o, Verfsize);
+			(c.createverf, o) = g64(buf, o);
 		* =>
 			raise Parse(sprint("Tnfs.Create, bad createhow %d", createhow));
 		}
@@ -1149,7 +1315,7 @@ pcreatehow(buf: array of byte, o: int, cc: ref Createhow): int
 		o = psattr(buf, o, c.attr);
 	Exclusive =>
 		o = p32(buf, o, CreateExclusive);
-		o = popaque(buf, o, c.createverf);
+		o = p64(buf, o, c.createverf);
 	* =>
 		raise "missing case";
 	}

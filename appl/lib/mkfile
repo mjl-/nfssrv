@@ -17,6 +17,7 @@ SYSMODULES=\
 	bufio.m\
 	sunrpc.m\
 	portmap.m\
+	util0.m\
 
 DISBIN=$ROOT/dis/lib
 

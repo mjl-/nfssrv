@@ -40,7 +40,6 @@ include "util0.m";
 	util: Util0;
 	l2a, kill, killgrp, pid, max, warn, hex: import util;
 
-
 Nfsfs: module {
 	init:	fn(nil: ref Draw->Context, nil: list of string);
 };
@@ -82,7 +81,7 @@ Fid: adt {
 	access:	int;
 	entries:	array of Nfsrpc->Entryplus;
 	dircookie:	big;
-	dircookieverf:	array of byte;
+	dircookieverf:	big;
 	direof:	int;
 	diroffset:	big;
 
@@ -320,7 +319,7 @@ dostyx(tm: ref Tmsg): ref Rmsg
 		f := fidtab.find(m.fid);
 		if(f != nil)
 			return styxerror(m, "fid in use");
-		f = ref Fid (m.fid, ref Fh (rootfh, nil, ""), 1, pathgen++, 0, 0, nil, big 0, nil, 0, big 0);
+		f = ref Fid (m.fid, ref Fh (rootfh, nil, ""), 1, pathgen++, 0, 0, nil, big 0, big 0, 0, big 0);
 		fidtab.add(f.fid, f);
 		return ref Rmsg.Attach (m.tag, f.qid());
 
@@ -366,7 +365,7 @@ dostyx(tm: ref Tmsg): ref Rmsg
 			if(i+1 < len m.names)
 				nparent = pathcombine(nparent, name);
 		}
-		nf = ref Fid (m.newfid, ref Fh (nfh, nparent, name), isdir, pathgen++, 0, 0, nil, big 0, nil, 0, big 0);
+		nf = ref Fid (m.newfid, ref Fh (nfh, nparent, name), isdir, pathgen++, 0, 0, nil, big 0, big 0, 0, big 0);
 		if(m.fid == m.newfid)
 			fidtab.del(m.fid);
 		fidtab.add(nf.fid, nf);
@@ -450,7 +449,7 @@ dostyx(tm: ref Tmsg): ref Rmsg
 		if(wantdir)
 			qtype = Sys->QTDIR;
 		fidtab.del(m.fid);
-		f = ref Fid (m.fid, ref Fh (nfh, pathcombine(f.fh.parent, f.fh.elem), m.name), wantdir, pathgen++, 0, 0, nil, big 0, nil, 0, big 0);
+		f = ref Fid (m.fid, ref Fh (nfh, pathcombine(f.fh.parent, f.fh.elem), m.name), wantdir, pathgen++, 0, 0, nil, big 0, big 0, 0, big 0);
 		f.isopen = 1;
 		f.access = access;
 		fidtab.add(f.fid, f);
@@ -467,7 +466,7 @@ dostyx(tm: ref Tmsg): ref Rmsg
 			if(m.offset == big 0) {
 				f.entries = nil;
 				f.dircookie = big 0;
-				f.dircookieverf = nil;
+				f.dircookieverf = big 0;
 				f.direof = 0;
 				f.diroffset = big 0;
 			}
@@ -909,10 +908,8 @@ nfscreate(fh: ref Fh, name: string, a: Sattr): (array of byte, string)
 	}
 }
 
-nfsreaddirplus(fh: ref Fh, cookie: big, cookieverf: array of byte): (array of Entryplus, int, array of byte, string)
+nfsreaddirplus(fh: ref Fh, cookie, cookieverf: big): (array of Entryplus, int, big, string)
 {
-	if(cookieverf == nil)
-		cookieverf = array[8] of {* => byte 0};
 	i := 0;
 	for(;;) {
 		tm := ref Tnfs.Readdirplus (nil, fh.fh, cookie, cookieverf, 4*1024, 4*1024);
@@ -928,7 +925,7 @@ nfsreaddirplus(fh: ref Fh, cookie: big, cookieverf: array of byte): (array of En
 					err = nfsrpc->error(g.status);
 				}
 			}
-		return (nil, 0, nil, err);
+		return (nil, 0, big 0, err);
 	}
 }
 
@@ -1051,12 +1048,12 @@ nfscommit(fh: ref Fh): string
 packfsstat(f: ref Rfsstat.Ok): string
 {
 	s := "";
-	s += sprint("tbytes %bd\n", f.tbytes);
-	s += sprint("fbytes %bd\n", f.fbytes);
-	s += sprint("abytes %bd\n", f.abytes);
-	s += sprint("tfiles %bd\n", f.tfiles);
-	s += sprint("ffiles %bd\n", f.ffiles);
-	s += sprint("afiles %bd\n", f.afiles);
+	s += sprint("tbytes %bud\n", f.tbytes);
+	s += sprint("fbytes %bud\n", f.fbytes);
+	s += sprint("abytes %bud\n", f.abytes);
+	s += sprint("tfiles %bud\n", f.tfiles);
+	s += sprint("ffiles %bud\n", f.ffiles);
+	s += sprint("afiles %bud\n", f.afiles);
 	s += sprint("invarsec %d\n", f.invarsec);
 	return s;
 }
@@ -1071,7 +1068,7 @@ packfsinfo(f: ref Rfsinfo.Ok): string
 	s += sprint("wtpref %d\n", f.wtpref);
 	s += sprint("wtmult %d\n", f.wtmult);
 	s += sprint("dtpref %d\n", f.dtpref);
-	s += sprint("maxfilesize %bd\n", f.maxfilesize);
+	s += sprint("maxfilesize %bud\n", f.maxfilesize);
 	s += sprint("timedelta %d,%d\n", f.timedelta.secs, f.timedelta.nsecs);
 	s += sprint("props %d\n", f.props);
 	return s;

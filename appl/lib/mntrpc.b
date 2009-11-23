@@ -3,6 +3,9 @@ implement Mntrpc;
 include "sys.m";
 	sys: Sys;
 	sprint: import sys;
+include "util0.m";
+	util: Util0;
+	hex, l2a, rev: import util;
 include "sunrpc.m";
 	sunrpc: Sunrpc;
 	g32, gopaque, gstr, p32, popaque, pstr: import sunrpc;
@@ -21,6 +24,8 @@ mnttags = array[] of {
 init()
 {
 	sys = load Sys Sys->PATH;
+	util = load Util0 Util0->PATH;
+	util->init();
 	sunrpc = load Sunrpc Sunrpc->PATH;
 	sunrpc->init();
 }
@@ -105,6 +110,24 @@ Tmnt.unpack(m: ref Trpc, buf: array of byte): ref Tmnt raises (Badrpc, Badprog, 
 	Badprocargs =>
 		raise;
 	}
+}
+
+tmntnames := array[] of {"Null", "Mnt", "Dump", "Umnt", "Umntall", "Export"};
+Tmnt.text(mm: self ref Tmnt): string
+{
+	s := sprint("Tmnsg.%s(", tmntnames[tagof mm]);
+	pick m := mm {
+	Null =>		;
+	Mnt =>		s += sprint("dirpath %q", m.dirpath);
+	Dump =>		;
+	Umnt =>		s += sprint("dirpath %q", m.dirpath);
+	Umntall =>	;
+	Export =>	;
+	* =>
+		raise "missing case";
+	}
+	s += ")";
+	return s;
 }
 
 Rmnt.size(mm: self ref Rmnt): int
@@ -241,19 +264,35 @@ Rmnt.unpack(tm: ref Trpc, rm: ref Rrpc, buf: array of byte): ref Rmnt raises (Ba
 	}
 }
 
-rev[T](l: list of T): list of T
+rmntnames := array[] of {"Null", "Mnt", "Dump", "Umnt", "Umntall", "Export"};
+Rmnt.text(mm: self ref Rmnt): string
 {
-	r: list of T;
-	for(; l != nil; l = tl l)
-		r = hd l::r;
-	return r;
-}
-
-l2a[T](l: list of T): array of T
-{
-	a := array[len l] of T;
-	i := 0;
-	for(; l != nil; l = tl l)
-		a[i++] = hd l;
-	return a;
+	s := sprint("Rmnt.%s(", rmntnames[tagof mm]);
+	pick m := mm {
+	Null =>		;
+	Mnt =>	
+		s += sprint("status %d", m.status);
+		if(m.status == Eok)
+			s += sprint(", fh %s, len auths %d", hex(m.fh), len m.auths);
+	Dump =>
+		l := "";
+		for(i := 0; i < len m.mountlist; i++)
+			l += sprint(", %q %q", m.mountlist[i].t0, m.mountlist[i].t1);
+		if(l != nil)
+			l = l[1:];
+		s += sprint("mountlist%s", l);
+	Umnt =>		;
+	Umntall =>	;
+	Export =>
+		l := "";
+		for(i := 0; i < len m.exports; i++)
+			l += sprint(", dir %q, len groups %d", m.exports[i].dir, len m.exports[i].groups);
+		if(l != nil)
+			l = l[1:];
+		s += sprint("exports%s", l);
+	* =>
+		raise "missing case";
+	}
+	s += ")";
+	return s;
 }

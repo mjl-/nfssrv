@@ -62,6 +62,8 @@ Nfsrpc: module
 	Time: adt {
 		secs,
 		nsecs:	int;
+
+		text:	fn(t: self Time): string;
 	};
 
 	Attr: adt {
@@ -78,17 +80,23 @@ Nfsrpc: module
 		atime,
 		mtime,
 		ctime:	int;
+
+		text:	fn(w: self ref Attr): string;
 	};
 
 	Weakattr: adt {
 		size:	big;
 		mtime,
 		ctime:	int;
+
+		text:	fn(w: self ref Weakattr): string;
 	};
 
 	Weakdata: adt {
 		before:	ref Weakattr;	# nil iff false
 		after:	ref Attr;	# nil iff false
+
+		text:	fn(w: self Weakdata): string;
 	};
 
 	SETdontchange, SETtoservertime, SETtoclienttime: con iota; # setatime, setmtime
@@ -105,12 +113,16 @@ Nfsrpc: module
 		atime,
 		setmtime,
 		mtime:	int;
+
+		text:	fn(s: self Sattr): string;
 	};
 	nullsattr: con Sattr (0, 0, 0, 0, 0, 0, 0, big 0, 0, 0, 0, 0);
 
 	Dirargs: adt {
 		fh:	array of byte;
 		name:	string;
+
+		text:	fn(d: self Dirargs): string;
 	};
 
 	Nod: adt {
@@ -126,6 +138,8 @@ Nfsrpc: module
 		Dir or
 		Lnk =>
 		}
+
+		text:	fn(n: self ref Nod): string;
 	};
 
 	Createhow: adt {
@@ -134,8 +148,10 @@ Nfsrpc: module
 		Guarded =>
 			attr:	Sattr;
 		Exclusive =>
-			createverf:	array of byte;
+			createverf:	big;
 		}
+
+		text:	fn(n: self ref Createhow): string;
 	};
 
 	WriteUnstable, WriteDatasync, WriteFilesync: con iota;
@@ -194,12 +210,12 @@ Nfsrpc: module
 		Readdir =>
 			fh:	array of byte;
 			cookie:	big;
-			cookieverf:	array of byte;
+			cookieverf:	big;
 			count:	int;
 		Readdirplus =>
 			fh:	array of byte;
 			cookie:	big;
-			cookieverf:	array of byte;
+			cookieverf:	big;
 			dircount:	int;
 			maxcount:	int;
 		Fsstat =>
@@ -277,7 +293,7 @@ Nfsrpc: module
 			weak:	Weakdata;
 			count:	int;
 			stable:	int;
-			verf:	array of byte; # must be 8 bytes
+			verf:	big;
 		Fail =>
 			status:	int;
 			weak:	Weakdata;
@@ -299,6 +315,8 @@ Nfsrpc: module
 		id:	big;
 		name:	string;
 		cookie:	big;
+
+		text:	fn(e: self Entry): string;
 	};
 	Entryplus: adt {
 		id:	big;
@@ -306,12 +324,14 @@ Nfsrpc: module
 		cookie:	big;
 		attr:	ref Attr; # may be nil
 		fh:	array of byte; # may be nil
+
+		text:	fn(e: self Entryplus): string;
 	};
 	Rreaddir: adt {
 		pick {
 		Ok =>
 			attr:	ref Attr; # may be nil
-			cookieverf:	array of byte; # must be 8 bytes
+			cookieverf:	big;
 			dir:	array of Entry;
 			eof:	int;
 		Fail =>
@@ -323,7 +343,7 @@ Nfsrpc: module
 		pick {
 		Ok =>
 			attr:	ref Attr; # may be nil
-			cookieverf:	array of byte;
+			cookieverf:	big;
 			dir:	array of Entryplus;
 			eof:	int;
 		Fail =>
@@ -385,7 +405,7 @@ Nfsrpc: module
 		pick {
 		Ok =>
 			weak:	Weakdata;
-			writeverf:	array of byte;
+			writeverf:	big;
 		Fail =>
 			status:	int;
 			weak:	Weakdata;
@@ -445,5 +465,6 @@ Nfsrpc: module
 		size:	fn(m: self ref Rnfs): int;
 		pack:	fn(m: self ref Rnfs, buf: array of byte, o: int): int;
 		unpack:	fn(tm: ref Sunrpc->Trpc, rm: ref Sunrpc->Rrpc, buf: array of byte): ref Rnfs raises (Badrpc, Badproc, Badprocargs);
+		text:	fn(m: self ref Rnfs): string;
 	};
 };

@@ -16,8 +16,9 @@ access is done as the user who started nfssrv.
 
 # install
 
-first, ensure a "mkconfig" file is present.  a bind/symlink to the
-mkconfig of your inferno install should do.  now "mk install" to
+first install "util".
+
+modify mkconfig if you don't have $ROOT set.  now "mk install" to
 compile and install the files.
 
 when building from within inferno, insert SYSHOST=Inferno and ROOT=

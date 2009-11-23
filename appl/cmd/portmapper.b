@@ -7,6 +7,9 @@ include "draw.m";
 include "arg.m";
 include "string.m";
 	str: String;
+include "util0.m";
+	util: Util0;
+	fail, warn, max, kill, hex: import util;
 include "sunrpc.m";
 	sunrpc: Sunrpc;
 	g32, gopaque, p32, popaque: import sunrpc;
@@ -45,6 +48,8 @@ init(nil: ref Draw->Context, args: list of string)
 	sys = load Sys Sys->PATH;
 	arg := load Arg Arg->PATH;
 	str = load String String->PATH;
+	util = load Util0 Util0->PATH;
+	util->init();
 	sunrpc = load Sunrpc Sunrpc->PATH;
 	sunrpc->init();
 	portmaprpc = load Portmaprpc Portmaprpc->PATH;
@@ -327,42 +332,8 @@ transact(buf, pre: array of byte, fd: ref Sys->FD): string
 	return sunrpc->writerpc(fd, pre, pre==nil, r);
 }
 
-kill(pid: int)
-{
-	p := sprint("/prog/%d/ctl", pid);
-	fd := sys->open(p, Sys->OWRITE);
-	if(fd != nil)
-		sys->fprint(fd, "kill");
-}
-
-hex(d: array of byte): string
-{
-	s := "";
-	for(i := 0; i < len d; i++)
-		s += sprint("%02x", int d[i]);
-	return s;
-}
-
-max(a, b: int): int
-{
-	if(a > b)
-		return a;
-	return b;
-}
-
-warn(s: string)
-{
-	sys->fprint(sys->fildes(2), "%s\n", s);
-}
-
 say(s: string)
 {
 	if(dflag)
 		warn(s);
-}
-
-fail(s: string)
-{
-	warn(s);
-	raise "fail:"+s;
 }
