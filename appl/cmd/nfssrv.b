@@ -11,10 +11,10 @@ include "string.m";
 	str: String;
 include "util0.m";
 	util: Util0;
-	fail, warn, max, hex, kill, killgrp, index: import util;
+	pid, fail, warn, max, hex, kill, killgrp, index: import util;
 include "sunrpc.m";
 	sunrpc: Sunrpc;
-	g32, g64, gopaque, p32, p64, popaque, Authsys: import sunrpc;
+	g32, g64, gopaque, p32, p64, popaque, pstr, pboolopaque, Authsys: import sunrpc;
 	Parse, Badrpc: import sunrpc;
 	Badrpcversion, Badprog, Badproc, Badprocargs: import sunrpc;
 	Trpc, Rrpc, Auth: import sunrpc;
@@ -24,7 +24,7 @@ include "../lib/mntrpc.m";
 include "../lib/nfsrpc.m";
 	nfs: Nfsrpc;
 	Tnfs, Rnfs: import nfs;
-	Attr, Sattr, Time, Specdata, Weakattr, Weakdata, Dirargs, Nod, Entry, Entryplus: import nfs;
+	Attr, Sattr, Time, Specdata, Weakattr, Weakdata, Dirargs, Nod, Entry, Entryplus, pboolattr: import nfs;
 	Rgetattr, Rlookup, Raccess, Rreadlink, Rread, Rwrite, Rchange, Rreaddir, Rreaddirplus, Rfsstat, Rfsinfo, Rpathconf, Rcommit: import nfs;
 
 Nfssrv: module {
@@ -495,16 +495,16 @@ listenudp(port: int, transact: ref fn(buf, pre: array of byte, fd: ref Sys->FD):
 }
 
 
-alarm(pid: int, pidc: chan of int)
+alarm(apid: int, pidc: chan of int)
 {
-	pidc <-= sys->pctl(0, nil);
+	pidc <-= pid();
 	sys->sleep(10*1000);
-	kill(pid);
+	kill(apid);
 }
 
 mntsrv(fd: ref Sys->FD)
 {
-	spawn alarm(sys->pctl(0, nil), pidc := chan of int);
+	spawn alarm(pid(), pidc := chan of int);
 	apid := <-pidc;
 	for(;;) {
 		(buf, err) := sunrpc->readmsg(fd);
@@ -997,7 +997,8 @@ if(dflag) say("readdir, stale");
 		eof := 0;
 		entries: list of Entry;
 		cookie := t.cookie;
-		for(n := 0; n < 16; n++) {  # xxx go on until no more
+		rsize := pboolattr(nil, 0, attr)+8+4+4; # attributes, cookieverf, 0 entries, eof
+		for(;;) {
 			(ok, ncookie, dir) := dirnext(dh, cookie);
 			if(ok < 0) {
 if(dflag) say("dirnext failed");
@@ -1008,12 +1009,15 @@ if(dflag) say("dirnext failed");
 			if(ncookie < big 0) {
 if(dflag) say("end of dir reached");
 				eof = 1;
-				dirdel(dh);
+				if(len entries == 0) # openbsd ignores eof flag, and then silently fails on Ebadcookie... keep around.
+					dirdel(dh);
 				break;
 			}
-			# if(!nfs->readdirfits(...))
-			# dirunnext(dh, entry);
 			e := Entry (dir.qid.path, dir.name, ncookie);
+			esize := entrysize(e);
+			if(rsize+esize > t.count)
+				break;
+			rsize += esize;
 			entries = e::entries;
 			cookie = ncookie;
 if(dflag) say(e.text());
@@ -1043,7 +1047,9 @@ if(dflag) say("readdirplus, stale");
 		eof := 0;
 		entries: list of Entryplus;
 		cookie := t.cookie;
-		for(n := 0; n < 6; n++) {  # xxx go on until no more
+		rsize := pboolattr(nil, 0, attr)+8+4+4; # attr+cookieverf+0 entries+eof
+		dsize := 0;
+		for(;;) {
 			(ok, ncookie, dir) := dirnext(dh, cookie);
 			if(ok < 0) {
 if(dflag) say("dirnext failed");
@@ -1054,11 +1060,10 @@ if(dflag) say("dirnext failed");
 			if(ncookie < big 0) {
 if(dflag) say("end of dir reached");
 				eof = 1;
-				dirdel(dh);
+				if(len entries == 0)  # see case for normal readdir
+					dirdel(dh);
 				break;
 			}
-			# if(!nfs->readdirfits(...))
-			# dirunnext(dh, entry);
 
 			# xxx have to verify this after i have more stuff working...
 			# sending a file handle for each entryplus seems superfluous.
@@ -1066,6 +1071,12 @@ if(dflag) say("end of dir reached");
 			# so include a file handle to help linux clients.
 			npath := makepath(path, dir.name);
 			e := Entryplus (dir.qid.path, dir.name, ncookie, getattr(npath).t0, fhput(npath));
+			esize0 := entryplussize(e, 0);
+			esize1 := entryplussize(e, 1);
+			if(rsize+esize1 >= t.maxcount || dsize+esize0 >= t.dircount)
+				break;
+			rsize += esize1;
+			dsize += esize0;
 			entries = e::entries;
 			cookie = ncookie;
 if(dflag) say(e.text());
@@ -1187,6 +1198,21 @@ if(dflag) say(sprint("getattr path %q, type %s, mode %o size %bud", p, fstypes[a
 	return (a, 0);
 }
 
+entrysize(e: Entry): int
+{
+	# bool more, id, name, cookie
+	return 4+8+pstr(nil, 0, e.name)+8;
+}
+
+entryplussize(e: Entryplus, with: int): int
+{
+	# bool more, id, name, cookie;  attr, fh
+	n := 4+8+pstr(nil, 0, e.name)+8;
+	if(with)
+		n += pboolattr(nil, 0, e.attr)+pboolopaque(nil, 0, e.fh);
+	return n;
+}
+
 errno(): int
 {
 	s := sprint("%r");
@@ -1225,6 +1251,6 @@ say(s: string)
 failall(s: string)
 {
 	warn(s);
-	killgrp(sys->pctl(0, nil));
+	killgrp(pid());
 	raise "fail:"+s;
 }

@@ -42,7 +42,6 @@ mechiel lukkien, reachable at mechiel@ueber.net or mechiel@xs4all.nl.
 
 - nfsfs: determine if we need to do some verification (cookies)
 - nfsfs: should we use restricted ports?
-- nfssrv: fix code in readdir(plus) so we never send too large responses
 - nfssrv: fix file handle cache eviction scheme
 - nfssrv: cache opened files
 - nfssrv: cleanup cached open directories

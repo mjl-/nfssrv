@@ -311,6 +311,14 @@ pbool(d: array of byte, o: int, v: int): int
 	return p32(d, o, v);
 }
 
+pboolopaque(d: array of byte, o: int, buf: array of byte): int
+{
+	o = pbool(d, o, buf!=nil);
+	if(buf != nil)
+		o = popaque(d, o, buf);
+	return o;
+}
+
 p32(d: array of byte, o: int, v: int): int
 {
 	if(d == nil)

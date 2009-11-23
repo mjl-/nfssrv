@@ -5,7 +5,7 @@ include "sys.m";
 	sprint: import sys;
 include "sunrpc.m";
 	sunrpc: Sunrpc;
-	gbool, g32, g64, gopaque, gopaquefixed, gstr, pbool, p32, p64, popaque, popaquefixed, pstr: import sunrpc;
+	gbool, g32, g64, gopaque, gopaquefixed, gstr, pbool, p32, p64, popaque, popaquefixed, pstr, pboolopaque: import sunrpc;
 	Parse, Badprog, Badproc, Badprocargs, Badrpc: import sunrpc;
 	Trpc, Rrpc, Auth: import sunrpc;
 include "nfsrpc.m";
@@ -406,24 +406,24 @@ Tnfs.text(mm: self ref Tnfs): string
 	Getattr =>	s += "fh "+hex(m.fh);
 	Setattr =>	s += "fh "+hex(m.fh);
 	Lookup =>	s += wheretext(m.where);
-	Access =>	s += "fh "+hex(m.fh)+sprint(" access 0x%x", m.access);
+	Access =>	s += "fh "+hex(m.fh)+sprint(", access 0x%x", m.access);
 	Readlink =>	s += "fh "+hex(m.fh);
-	Read =>		s += "fh "+hex(m.fh)+sprint(" offset %bud count %d", m.offset, m.count);
-	Write =>	s += "fh "+hex(m.fh)+sprint(" offset %bud count %d", m.offset, m.count);
+	Read =>		s += "fh "+hex(m.fh)+sprint(", offset %bud, count %d", m.offset, m.count);
+	Write =>	s += "fh "+hex(m.fh)+sprint(", offset %bud, count %d", m.offset, m.count);
 	Create =>	s += wheretext(m.where);
 	Mkdir =>	s += wheretext(m.where);
-	Symlink =>	s += wheretext(m.where)+sprint(" path %q", m.path);
+	Symlink =>	s += wheretext(m.where)+sprint(", path %q", m.path);
 	Mknod =>	s += wheretext(m.where);
 	Remove =>	s += wheretext(m.where);
 	Rmdir =>	s += wheretext(m.where);
 	Rename =>	s += "old "+wheretext(m.owhere)+" new "+wheretext(m.nwhere);
 	Link =>		s += "fh "+hex(m.fh)+" "+wheretext(m.link);
-	Readdir =>	s += "fh "+hex(m.fh)+sprint(" count %d", m.count);
-	Readdirplus =>	s += "fh "+hex(m.fh)+sprint(" dircount %d maxcount %d",m.dircount, m.maxcount);
+	Readdir =>	s += "fh "+hex(m.fh)+sprint("cookie %bux, count %d", m.cookie, m.count);
+	Readdirplus =>	s += "fh "+hex(m.fh)+sprint("cookie %bux, dircount %d, maxcount %d", m.cookie, m.dircount, m.maxcount);
 	Fsstat =>	s += "fh "+hex(m.rootfh);
 	Fsinfo =>	s += "fh "+hex(m.rootfh);
 	Pathconf =>	s += "fh "+hex(m.fh);
-	Commit =>	s += "fh "+hex(m.fh)+sprint(" offset %bud count %d", m.offset, m.count);;
+	Commit =>	s += "fh "+hex(m.fh)+sprint(", offset %bud, count %d", m.offset, m.count);;
 	}
 	s += ")";
 	return s;
@@ -576,9 +576,7 @@ Rnfs.pack(mm: self ref Rnfs, buf: array of byte, o: int): int
 				o = pstr(buf, o, e.name);
 				o = p64(buf, o, e.cookie);
 				o = pboolattr(buf, o, e.attr);
-				o = pbool(buf, o, e.fh != nil);
-				if(e.fh != nil)
-					o = popaque(buf, o, e.fh);
+				o = pboolopaque(buf, o, e.fh);
 			}
 			o = p32(buf, o, 0);
 			o = pbool(buf, o, r.eof);

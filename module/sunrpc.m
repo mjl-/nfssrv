@@ -120,6 +120,7 @@ Sunrpc: module
 	popaquefixed:	fn(d: array of byte, o: int, buf: array of byte): int;
 	pstr:		fn(d: array of byte, o: int, s: string): int;
 	pbool:		fn(d: array of byte, o: int, v: int): int;
+	pboolopaque:	fn(d: array of byte, o: int, buf: array of byte): int;
 
 	gbool:		fn(d: array of byte, o: int): (int, int) raises (Parse);
 	g32:		fn(d: array of byte, o: int): (int, int) raises (Parse);

@@ -39,6 +39,7 @@ Nfsrpc: module
 	Ejukebox:	con 10008;
 
 	error:	fn(v: int): string;
+	pboolattr:	fn(buf: array of byte, o: int, a: ref Attr): int;
 
 	# file types
 	FTreg, FTdir, FTblk, FTchr, FTlnk, FTsock, FTfifo: con 1+iota;
