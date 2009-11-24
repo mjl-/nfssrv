@@ -156,12 +156,12 @@ Createhow.text(nn: self ref Createhow): string
 
 Entry.text(e: self Entry): string
 {
-	return sprint("Entry(id %bux, name %q, cookie %bux)", e.id, e.name, e.cookie);
+	return sprint("Entry(id %bux, name %q, cookie %bd)", e.id, e.name, e.cookie);
 }
 
 Entryplus.text(e: self Entryplus): string
 {
-	return sprint("Entryplus(id %bux, name %q, cookie %bux, attr %s, fh %s)", e.id, e.name, e.cookie, e.attr.text(), hex(e.fh));
+	return sprint("Entryplus(id %bux, name %q, cookie %bd, attr %s, fh %s)", e.id, e.name, e.cookie, e.attr.text(), hex(e.fh));
 }
 
 
@@ -416,10 +416,10 @@ Tnfs.text(mm: self ref Tnfs): string
 	Mknod =>	s += wheretext(m.where);
 	Remove =>	s += wheretext(m.where);
 	Rmdir =>	s += wheretext(m.where);
-	Rename =>	s += "old "+wheretext(m.owhere)+" new "+wheretext(m.nwhere);
+	Rename =>	s += "old "+wheretext(m.owhere)+", new "+wheretext(m.nwhere);
 	Link =>		s += "fh "+hex(m.fh)+" "+wheretext(m.link);
-	Readdir =>	s += "fh "+hex(m.fh)+sprint("cookie %bux, count %d", m.cookie, m.count);
-	Readdirplus =>	s += "fh "+hex(m.fh)+sprint("cookie %bux, dircount %d, maxcount %d", m.cookie, m.dircount, m.maxcount);
+	Readdir =>	s += "fh "+hex(m.fh)+sprint(", cookie %bux, verf %bux, count %d", m.cookie, m.cookieverf, m.count);
+	Readdirplus =>	s += "fh "+hex(m.fh)+sprint(", cookie %bux, verf %bux, dircount %d, maxcount %d", m.cookie, m.cookieverf, m.dircount, m.maxcount);
 	Fsstat =>	s += "fh "+hex(m.rootfh);
 	Fsinfo =>	s += "fh "+hex(m.rootfh);
 	Pathconf =>	s += "fh "+hex(m.fh);

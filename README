@@ -42,12 +42,7 @@ mechiel lukkien, reachable at mechiel@ueber.net or mechiel@xs4all.nl.
 
 - nfsfs: determine if we need to do some verification (cookies)
 - nfsfs: should we use restricted ports?
-- nfssrv: fix file handle cache eviction scheme
-- nfssrv: cache opened files
-- nfssrv: cleanup cached open directories
-- nfssrv: implement worker threads and allow responding to messages out of order.
+- nfssrv: support serving multiple users, each with their own mount of an fd (with their /dev/user).
+- nfssrv: implement worker threads and allow responding to messages out of order?
 - nfssrv: rpc message should hold source address (ip, port, proto)
 - nfssrv: see if Weakdata(nil,nil) can be filled in.  other optional data too perhaps.
-- nfssrv: think whether we can force clients to treat synthetic files
-  properly by sending the right non-caching responses (e.g. no new
-  attributes after an operation).

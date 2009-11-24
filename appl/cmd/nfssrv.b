@@ -5,13 +5,19 @@ include "sys.m";
 	sprint: import sys;
 include "draw.m";
 include "arg.m";
+include "bufio.m";
+	bufio: Bufio;
+	Iobuf: import bufio;
 include "daytime.m";
-	daytime: Daytime;
+	dt: Daytime;
 include "string.m";
 	str: String;
+include "tables.m";
+	tables: Tables;
+	Table, Strhash: import tables;
 include "util0.m";
 	util: Util0;
-	pid, fail, warn, max, hex, kill, killgrp, index: import util;
+	l2a, eq, pid, fail, warn, min, max, hex, kill, killgrp, index: import util;
 include "sunrpc.m";
 	sunrpc: Sunrpc;
 	g32, g64, gopaque, p32, p64, popaque, pstr, pboolopaque, Authsys: import sunrpc;
@@ -34,22 +40,72 @@ Nfssrv: module {
 dflag: int;
 nfsport := 2049;
 mntport := 39422;
-root: string;
+root := "/";	# from command-line
+srvroot: string;  # for mnttransact, the location of root after possible bind of root on /
 protocol: string;  # nil is both tcp & udp, otherwise it's the protocol specified
-
 regfd: ref Sys->FD;  # global, so we keep a reference until nfssrv dies
-verfcookie := big 0;
-
 nilwd: Weakdata;
-
 uname: string;
+
+Int: adt {
+	v:	int;
+};
+
+userfile,
+groupfile:	string;
+uids,
+gids: ref Table[string];
+users,
+groups:	ref Strhash[ref Int];
+
+pathdir,
+pathupdir: string;
+fhqidpath: int;
+
+fhgen := big 1;
+
+Dh: adt {
+	fd:	ref Sys->FD;
+	dirs:	array of Sys->Dir;
+	off:	int;	# dirs starts at off, first is 1 , to let cookie 0 be special
+	verf:	big;
+	use:	int;	# time of last use
+	busy:	int;	# whether handed out by main()
+};
+dirhandles: list of ref Dh;
+
+Fh: adt {
+	fh:	big;
+	path:	string;
+	use:	int;	# time of last use
+};
+filehandles: list of ref Fh;
+
+# for plain files only
+Fd: adt {
+	fh:	array of byte;
+	mode:	int;	# OREAD or OWRITE
+	fd:	ref Sys->FD;
+	use:	int;	# last use
+};
+fdcache: list of ref Fd;
+
+cleanc: chan of int;
+finddirc: chan of (array of byte, big, int, chan of (ref Dh, ref Attr, int));
+dirc: chan of ref Dh;
+newdirc: chan of ref Dh;
+fhfindc: chan of (big, chan of ref Fh);
+fhgetpathc: chan of (string, chan of ref Fh);
+fdopenc: chan of (array of byte, string, int, chan of (ref Sys->FD, string));
 
 init(nil: ref Draw->Context, args: list of string)
 {
 	sys = load Sys Sys->PATH;
 	arg := load Arg Arg->PATH;
-	daytime = load Daytime Daytime->PATH;
+	bufio = load Bufio Bufio->PATH;
+	dt = load Daytime Daytime->PATH;
 	str = load String String->PATH;
+	tables = load Tables Tables->PATH;
 	util = load Util0 Util0->PATH;
 	util->init();
 	sunrpc = load Sunrpc Sunrpc->PATH;
@@ -60,7 +116,7 @@ init(nil: ref Draw->Context, args: list of string)
 	nfs->init();
 
 	arg->init(args);
-	arg->setusage(arg->progname()+" [-d] [-p udp|tcp] [-n nfsport] [-m mntport] [root]");
+	arg->setusage(arg->progname()+" [-d] [-n nfsport] [-m mntport] [-p udp|tcp] [-s pathdir pathupdir] [-t passwd group] [root]");
 	while((c := arg->opt()) != 0)
 		case c {
 		'd' =>	dflag++;
@@ -74,6 +130,13 @@ init(nil: ref Draw->Context, args: list of string)
 			* =>
 				arg->usage();
 			}
+		's' =>
+			pathdir = arg->earg();
+			pathupdir = arg->earg();
+			fhqidpath = 1;
+		't' =>
+			userfile = arg->earg();
+			groupfile = arg->earg();
 		* =>	arg->usage();
 		}
 	args = arg->argv();
@@ -81,9 +144,24 @@ init(nil: ref Draw->Context, args: list of string)
 		arg->usage();
 	if(args != nil)
 		root = hd args;
+	if(fhqidpath)
+		srvroot = root;
+	else
+		srvroot = "/";
 	sunrpc->dflag = max(0, dflag-2);
 	mnt->dflag = max(0, dflag-1);
 	nfs->dflag = max(0, dflag-1);
+
+	if(userfile != nil) {
+		uids = uids.new(31, nil);
+		users = users.new(31, nil);
+		readpasswd(userfile);
+	}
+	if(groupfile != nil) {
+		gids = gids.new(31, nil);
+		groups = groups.new(31, nil);
+		readgroup(groupfile);
+	}
 
 	uname = "none";
 	fd := sys->open("/dev/user", Sys->OREAD);
@@ -107,337 +185,113 @@ init(nil: ref Draw->Context, args: list of string)
 	if(protocol != "tcp" && sys->fprint(regfd, "add %d %d udp %d\n", nfs->ProgNfs, nfs->VersNfs, nfsport) < 0)
 		failall(sprint("registering nfs udp: %r"));
 
-	verfcookie = (big sys->millisec()<<32)|big daytime->now();
-	initfh();
+	cleanc = chan of int;
+	finddirc = chan of (array of byte, big, int, chan of (ref Dh, ref Attr, int));
+	dirc = chan of ref Dh;
+	newdirc = chan of ref Dh;
+	fhfindc = chan of (big, chan of ref Fh);
+	fhgetpathc = chan of (string, chan of ref Fh);
+	fdopenc = chan of (array of byte, string, int, chan of (ref Sys->FD, string));
 
 	spawn listen(nfsport, nfssrv);
 	spawn listenudp(nfsport, nfstransact);
 	spawn listen(mntport, mntsrv);
 	spawn listenudp(mntport, mnttransact);
+	spawn main();
 }
 
-Fh: adt {
-	fh:	big;
-	path:	string;
-	gen:	int;
-};
-
-Dh: adt {
-	fd:	ref Sys->FD;
-	ocookies,
-	cookies:	array of big;	# consecutive numbers
-	odirs,
-	dirs:		array of Sys->Dir;
-};
-
-# nfs requires the server to cache file handles, but allows the server to invalidate them at any time.
-# for simplicity, we keep full paths for each file handle.
-# paths are hashed to a 7-bit base into `filehandles'.
-# we keep track of last use (Fh.gen, updated at lookup),
-# and evict the entry with the least recent use (but never the root file handle).
-# file handles are generated by their 7 bit base and a 56 bits `fhgen',
-# this should ensure they are unique for nfssrv's lifetime.
-
-filehandles := array[2**14] of {* => Fh (big 0, nil, 0)};  # 2**7 lists of 2**7 elements
-dirhandles: list of ref Dh;
-dircookiegen := big 0;
-
-Basemask: con (1<<7)-1;
-Basesize: con (1<<7);
-fhgen := big 1;
-fhusegen := 0;
-
-filehandlelock: chan of int;
-initfh()
+uid2name(uid: int): string
 {
-	filehandlelock = chan[1] of int;
-	filehandlelock <-= 1;
-	fhput("/");
+	if(uids == nil)
+		return "none";
+	s := uids.find(uid);
+	if(s == nil)
+		s = "none";
+	return s;
 }
 
-fhlock()
+name2uid(name: string): int
 {
-	<-filehandlelock;
+	if(users == nil)
+		return 0;
+	s := users.find(name);
+	if(s == nil)
+		return 0;
+	return s.v;
 }
 
-fhunlock()
+gid2name(gid: int): string
 {
-	filehandlelock <-= 1;
+	if(gids == nil)
+		return "none";
+	s := gids.find(gid);
+	if(s == nil)
+		s = "none";
+	return s;
 }
 
-
-gfh(d: array of byte): big
+name2gid(name: string): int
 {
-	n := len d;
-	v := big 0;
-	for(i := 0; i < n; i++)
-		v |= big d[i]<<((n-1-i)*8);
-	return v;
+	if(groups == nil)
+		return 0;
+	s := groups.find(name);
+	if(s == nil)
+		return 0;
+	return s.v;
 }
 
-pfh(v: big): array of byte
+readpasswd(f: string)
 {
-	d := array[8] of byte;
-	p64(d, 0, v);
-	i := 0;
-	while(i < len d-1 && d[i] == byte 0)
-		i++;
-	return d[i:];
-}
-
-fhget(fhbuf: array of byte): string
-{
-	if(len fhbuf > 8)
-		return nil;
-	fh := gfh(fhbuf);
-	base := int fh&Basemask;
-
-	fhlock();
-	end := (base+1)*Basesize;
-	path: string;
-	for(i := base*Basesize; i < end; i++) {
-		if(filehandles[i].fh == fh) {
-			if(++fhusegen < 0)
-				fhusegen = 1;
-			filehandles[i].gen = fhusegen;
-			path = filehandles[i].path;
+	b := bufio->open(f, Bufio->OREAD);
+	if(b == nil)
+		fail(sprint("open %q: %r", f));
+	nl := 0;
+	for(;;) {
+		s := b.gets('\n');
+		if(s == nil)
 			break;
-		}
+		nl++;
+		if(s[len s-1] != '\n')
+			fail(sprint("%q:%d: missing newline at end of file", f, nl));
+		s = s[:len s-1];
+		t := l2a(sys->tokenize(s, ":").t1);
+		if(len t < 4)
+			fail(sprint("%q:%d: too few tokens", f, nl));
+		(uid, urem) := str->toint(t[2], 10);
+		(gid, grem) := str->toint(t[3], 10);
+		if(urem != nil || grem != nil)
+			fail(sprint("%q:%d: bad uid/gid", f, nl));
+		user := t[0];
+		uids.add(uid, user);
+		users.add(user, ref Int (uid));
+		gid = 0; # not using gid for now...
 	}
-	fhunlock();
-if(dflag) say(sprint("fhget, fh %s -> path %q", hex(fhbuf), path));
-	return path;
 }
 
-fhdel(fhbuf: array of byte)
+readgroup(f: string)
 {
-	if(len fhbuf != 8)
-		return;
-	fh := gfh(fhbuf);
-	base := int fh&Basemask;
-
-	fhlock();
-	end := (base+1)*Basesize;
-	for(i := base*Basesize; i < end; i++) {
-		if(filehandles[i].fh == fh) {
-			filehandles[i].path = nil;
-			filehandles[i].gen = 0;
+	b := bufio->open(f, Bufio->OREAD);
+	if(b == nil)
+		fail(sprint("open %q: %r", f));
+	nl := 0;
+	for(;;) {
+		s := b.gets('\n');
+		if(s == nil)
 			break;
-		}
+		nl++;
+		if(s[len s-1] != '\n')
+			fail(sprint("%q:%d: missing newline at end of file", f, nl));
+		s = s[:len s-1];
+		t := l2a(sys->tokenize(s, ":").t1);
+		if(len t < 3)
+			fail(sprint("%q:%d: too few tokens", f, nl));
+		(gid, grem) := str->toint(t[2], 10);
+		if(grem != nil)
+			fail(sprint("%q:%d: bad gid", f, nl));
+		group := t[0];
+		gids.add(gid, group);
+		groups.add(group, ref Int (gid));
 	}
-	fhunlock();
-}
-
-fhput(path: string): array of byte
-{
-	base := pathhash(path);
-
-	fhlock();
-	end := (base+1)*Basesize;
-	oldest := base*Basesize;
-	oldestgen := filehandles[oldest].gen;
-	fh: array of byte;
-	for(i := base*Basesize; i < end; i++) {
-		if(filehandles[i].path == path) {
-			if(++fhusegen < 0)
-				fhusegen = 1;
-			filehandles[i].gen = fhusegen;
-			fh = pfh(filehandles[i].fh);
-			break;
-		} else if(filehandles[i].path != "/") {
-			gen := filehandles[i].gen;
-			if(filehandles[oldest].path == "/"
-			|| oldestgen > fhusegen && gen < oldestgen && gen > fhusegen
-			|| oldestgen < fhusegen && (gen < oldestgen || gen > fhusegen)) {
-				oldestgen = gen;
-				oldest = i;
-			}
-		}
-	}
-	if(fh == nil) {
-		filehandles[oldest].fh = ((++fhgen)<<7)|big base;
-		filehandles[oldest].path = path;
-		if(++fhusegen < 0)
-			fhusegen = 1;
-		filehandles[oldest].gen = fhusegen;
-
-		fh = pfh(filehandles[oldest].fh);
-	}
-	fhunlock();
-if(dflag) say(sprint("fhput, path %q, base %x -> fh %s", path, base, hex(fh)));
-	return fh;
-}
-
-pathhash(p: string): int
-{
-	v := 0;
-	for(i := 0; i < len p; i++)
-		v += int p[i];
-	return v&Basemask;
-}
-
-
-dirdel(dh: ref Dh)
-{
-if(dflag) say("dirdel");
-	nl: list of ref Dh;
-	for(l := dirhandles; l != nil; l = tl l)
-		if(hd l != dh)
-			nl = hd l::nl;
-	dirhandles = nl;
-}
-
-dirput(fd: ref Sys->FD): ref Dh
-{
-	dh := ref Dh (fd, nil, nil, nil, nil);
-	dirhandles = dh::dirhandles;
-if(dflag) say("dirput");
-	return dh;
-}
-
-dirfind(dh: ref Dh, cookie: big): int
-{
-	i := dirmatch(dh.ocookies, cookie);
-	if(i >= 0)
-		return i;
-	i = dirmatch(dh.cookies, cookie);
-	if(i >= 0)
-		return len dh.ocookies+i;
-	return -1;
-}
-
-dirmatch(cookies: array of big, cookie: big): int
-{
-	if(len cookies == 0 || cookie < cookies[0] || cookie > cookies[len cookies-1])
-		return -1;
-	return int (cookie-cookies[0]);
-}
-
-dirindex(dh: ref Dh, i: int): (big, Sys->Dir)
-{
-	if(i < 0)
-		raise "bad index";
-	if(i < len dh.odirs)
-		return (dh.ocookies[i], dh.odirs[i]);
-	i -= len dh.odirs;
-	if(i < len dh.dirs)
-		return (dh.cookies[i], dh.dirs[i]);
-	raise "bad index";
-}
-
-dirget(cookie: big): ref Dh
-{
-if(dflag) say(sprint("dirget, cookie %bux", cookie));
-	for(l := dirhandles; l != nil; l = tl l) {
-		dh := hd l;
-		if(dirfind(dh, cookie) >= 0) {
-if(dflag) say(sprint("dirget, cookie %bux, hit", cookie));
-			return dh;
-		}
-	}
-if(dflag) say(sprint("dirget, cookie %bux, miss", cookie));
-	return nil;
-}
-
-dirnext(dh: ref Dh, cookie: big): (int, big, Sys->Dir)
-{
-	if(len dh.cookies == 0 || dh.cookies[len dh.cookies-1] == cookie) {
-		(dh.ocookies, dh.odirs) = (dh.cookies, dh.dirs);
-		n: int;
-		(n, dh.dirs) = sys->dirread(dh.fd);
-if(dflag) say(sprint("dirnext, dirread gave %d dirs (%d)", len dh.dirs, n));
-		if(n <= 0)
-			return (n, big -1, sys->zerodir);
-		dh.cookies = array[len dh.dirs] of big;
-		for(i := 0; i < len dh.dirs; i++)
-			dh.cookies[i] = ++dircookiegen;
-		return (1, dh.cookies[0], dh.dirs[0]);
-	}
-
-	i := dirfind(dh, cookie);
-	if(i < 0)
-		return (0, big -1, sys->zerodir);
-	if(i+1 >= len dh.odirs+len dh.dirs)
-		return (1, big -1, sys->zerodir);
-	(ncookie, dir) := dirindex(dh, i+1);
-	if(ncookie == cookie)
-		raise "bogus";
-if(dflag) say(sprint("dirnext, have dir elem %q.  orig cookie %bux i %d, new cookie %bux i %d", dir.name, cookie, i, ncookie, i+1));
-	return (1, ncookie, dir);
-}
-
-parent(p: string): string
-{
-if(dflag) say(sprint("parent() for p %q", p));
-	if(p == "/")
-		return p;
-	p = str->splitstrr(p, "/").t0;
-	if(p != "/")
-		p = p[:len p-1];
-	return p;
-}
-
-makepath(dir, file: string): string
-{
-	p := "/"+file;
-	if(dir != "/")
-		p = dir+p;
-	return p;
-}
-
-badname(s: string): int
-{
-	return s == "" || s == "." || s == "..";
-}
-
-sattr2dir(s: Sattr): (Sys->Dir, int)
-{
-	bad := 0;
-	ndir := sys->nulldir;
-	if(s.setmode) {
-		ndir.mode = s.mode&8r777;
-		bad = bad || s.mode&~8r777;
-	}
-	# xxx uid & gid
-	bad = bad || s.setuid || s.setgid;
-	if(s.setsize)
-		ndir.length = s.size;
-	case s.setatime {
-	nfs->SETdontchange =>	;
-	nfs->SETtoservertime =>	ndir.atime = daytime->now();
-	nfs->SETtoclienttime =>	ndir.atime = s.atime;
-	* =>	bad = 1;
-	}
-	case s.setmtime {
-	nfs->SETdontchange =>	;
-	nfs->SETtoservertime =>	ndir.mtime = daytime->now();
-	nfs->SETtoclienttime =>	ndir.mtime = s.mtime;
-	* =>	bad = 1;
-	}
-	return (ndir, bad);
-}
-
-getdir(cookie: big, attr: ref Attr, path: string): (ref Dh, int)
-{
-	if(attr == nil)
-		return (nil, nfs->Estale);
-	if(cookie == big 0) {
-if(dflag) say("cookie == 0, opening dir");
-		dfd := sys->open(path, Sys->OREAD);
-		if(dfd == nil) {
-if(dflag) say(sprint("readdir, open path %q failed: %r", path));
-			return (nil, errno());
-		}
-		return (dirput(dfd), nfs->Eok);
-	}
-
-if(dflag) say("dir already open, using cookie");
-	dh := dirget(cookie);
-	if(dh == nil) {
-if(dflag) say(sprint("readdir, old cookie"));
-		return (nil, nfs->Ebadcookie);
-	}
-	return (dh, nfs->Eok);
 }
 
 listen(port: int, srv: ref fn(fd: ref Sys->FD))
@@ -476,7 +330,7 @@ listenudp(port: int, transact: ref fn(buf, pre: array of byte, fd: ref Sys->FD):
 	if(fd == nil)
 		fail(sprint("udp data: %r"));
 	say("announced udp");
-	if(root != nil) {
+	if(!fhqidpath && root != "/") {
 		sys->pctl(Sys->FORKNS, nil);
 		if(sys->bind(root, "/", Sys->MREPL) < 0)
 			failall(sprint("bind %q: %r", root));
@@ -504,6 +358,11 @@ alarm(apid: int, pidc: chan of int)
 
 mntsrv(fd: ref Sys->FD)
 {
+	if(!fhqidpath && root != "/") {
+		sys->pctl(Sys->FORKNS, nil);
+		if(sys->bind(root, "/", Sys->MREPL) < 0)
+			return warn(sprint("bind %q /: %r", root));
+	}
 	spawn alarm(pid(), pidc := chan of int);
 	apid := <-pidc;
 	for(;;) {
@@ -554,9 +413,12 @@ mnttransact(buf, pre: array of byte, fd: ref Sys->FD): string
 		r = ref Rmnt.Null (rok);
 	Mnt =>
 		say("mnt, mnt");
-		fh := fhput("/");
+		status := Mntrpc->Eok;
+		fh := path2fh(srvroot);
+		if(fh == nil)
+			status = errno();
 		auths := array[] of {sunrpc->Asys};
-		r = ref Rmnt.Mnt (rok, Mntrpc->Eok, fh, auths);
+		r = ref Rmnt.Mnt (rok, status, fh, auths);
 	Dump =>
 		say("mnt, dump");
 		r = ref Rmnt.Dump (rok, nil);
@@ -580,7 +442,7 @@ mnttransact(buf, pre: array of byte, fd: ref Sys->FD): string
 
 nfssrv(fd: ref Sys->FD)
 {
-	if(root != nil) {
+	if(!fhqidpath && root != nil) {
 		sys->pctl(Sys->FORKNS, nil);
 		if(sys->bind(root, "/", Sys->MREPL) < 0)
 			return warn(sprint("bind %q /: %r", root));
@@ -629,120 +491,76 @@ Top:
 
 	Getattr =>
 		rr = r := ref Rnfs.Getattr;
-		path := fhget(t.fh);
-		if(path == nil) {
-			r.r = ref Rgetattr.Fail (nfs->Estale);
-			break;
-		}
-		(a, errno) := getattr(path);
-		if(a == nil)
-			r.r = ref Rgetattr.Fail (errno);
+		(ok, dir) := fhstat(t.fh);
+		if(ok == 0)
+			r.r = ref Rgetattr.Ok (dir2attr(dir));
 		else
-			r.r = ref Rgetattr.Ok (*a);
+			r.r = ref Rgetattr.Fail (errno());
 
 	Setattr =>
 		rr = r := ref Rnfs.Setattr;
 		r.weak = nilwd;
-		path := fhget(t.fh);
-		if(path == nil) {
-			r.status = nfs->Estale;
+
+		(ok, dir) := fhstat(t.fh);
+		if(ok < 0) {
+			r.status = errno();
 			break;
 		}
-
-		if(t.haveguard) {
-			(ok, dir) := sys->stat(path);
-			if(ok < 0) {
-				r.status = errno();
-				break;
-			}
-			if(dir.mtime != t.guardctime) {
-				r.status = nfs->Enotsync;
-				break;
-			}
+		if(t.haveguard && dir.mtime != t.guardctime) {
+			r.status = nfs->Enotsync;
+			break;
 		}
 
 		# build the new Dir, starting with all don't cares.
 		# "bad" indicates whether we encountered a request we don't supported.
-		(ndir, bad) := sattr2dir(t.newattr);
-		if(sys->wstat(path, ndir) < 0) {
-			warn(sprint("wstat %q: %r", path));
-			r.status = errno();
-			break;
-		}
-
+		(ndir, bad) := sattr2dir(t.newattr, dir.mode);
 		if(bad)
 			r.status = nfs->Einval;
+		else if(fhwstat(t.fh, ndir) < 0)
+			r.status = errno();
 		else
 			r.status = nfs->Eok;
 
 	Lookup =>
 		rr = r := ref Rnfs.Lookup;
-		dirpath := fhget(t.where.fh);
-		if(dirpath == nil) {
-if(dflag) say(sprint("lookup, stale fh %s", hex(t.where.fh)));
-			r.r = ref Rlookup.Fail (nfs->Estale, nil);
-			break;
-		}
-		dirattr := getattr(dirpath).t0;
-		npath: string;
-if(dflag) say(sprint("lookup, dirpath %q, name %q", dirpath, t.where.name));
-		case t.where.name {
-		"" =>
-			r.r = ref Rlookup.Fail (nfs->Einval, dirattr);
-			break Top;
-		"." =>
-			npath = dirpath;
-		".." =>
-			npath = parent(dirpath);
-		* =>
-			npath = makepath(dirpath, t.where.name);
-		}
-if(dflag) say(sprint("lookup, dirpath %q, name %q, npath %q", dirpath, t.where.name, npath));
-		(fattr, status) := getattr(npath);
-		if(fattr == nil) {
-			r.r = ref Rlookup.Fail (status, dirattr);
-			break;
-		}
-		fh := fhput(npath);
-		r.r = ref Rlookup.Ok (fh, fattr, dirattr);
+		fh := fhlookup(t.where.fh, t.where.name);
+		if(fh == nil)
+			r.r = ref Rlookup.Fail (errno(), nil);
+		else
+			r.r = ref Rlookup.Ok (fh, fhattr(fh), fhattr(t.where.fh));
 
 	Access =>
 		rr = r := ref Rnfs.Access;
-		path := fhget(t.fh);
-		if(path == nil) {
-			r.r = ref Raccess.Fail (nfs->Estale, nil);
+		(ok, dir) := fhstat(t.fh);
+		if(ok < 0) {
+			r.r = ref Raccess.Fail (errno(), nil);
 			break;
 		}
 
 		# we can only approximate...
 		# if we are owner, use owner perms.
 		# otherwise see if we are group.
-		# otherwise uses other's perms.
+		# otherwise use other's perms.
 		# we can't determine if we are part of other groups.
 		access := 0;
-		(ok, dir) := sys->stat(path);
-		if(ok == 0) {
-			perm: int;
-			if(dir.uid == uname)
-				perm = dir.mode>>6;
-			else if(dir.gid == uname)
-				perm = dir.mode>>3;
-			else
-				perm = dir.mode;
-			if(dflag) say(sprint("mode 8r%uo, uid %q gid %q uname %q, perm 8r%uo", dir.mode, dir.uid, dir.gid, uname, perm));
-			perm &= (1<<3)-1;
-			br := bw := bx := 0;
-			if(perm&8r4) br = ~0;
-			if(perm&8r2) bw = ~0;
-			if(perm&8r1) bx = ~0;
-			if(dflag) say(sprint("perm 8r%uo, br %ux bw %ux Bx %ux", perm, br, bw, bx));
-			access |= nfs->ACread&br;
-			access |= (nfs->ACmodify|nfs->ACextend|nfs->ACdelete)&bw;
-			access |= (nfs->AClookup|nfs->ACexecute)&bx;
-		} else
-			if(dflag) say(sprint("stat %q failed: %r", path));
-if(dflag) say(sprint("access, path %q, access 0x%x (requested 0x%x", path, access, t.access));
-		r.r = ref Raccess.Ok (getattr(path).t0, access);
+		perm: int;
+		if(dir.uid == uname)
+			perm = dir.mode>>6;
+		else if(dir.gid == uname)
+			perm = dir.mode>>3;
+		else
+			perm = dir.mode;
+		perm &= 8r7;
+		br := bw := bx := 0;
+		if(perm&8r4) br = ~0;
+		if(perm&8r2) bw = ~0;
+		if(perm&8r1) bx = ~0;
+		if(dflag) say(sprint("mode 8r%uo, uid %q gid %q uname %q, perm 8r%uo", dir.mode, dir.uid, dir.gid, uname, perm));
+		if(dflag) say(sprint("perm 8r%uo, br %ux bw %ux bx %ux", perm, br, bw, bx));
+		access |= nfs->ACread&br;
+		access |= (nfs->ACmodify|nfs->ACextend|nfs->ACdelete)&bw;
+		access |= (nfs->AClookup|nfs->ACexecute)&bx;
+		r.r = ref Raccess.Ok (ref dir2attr(dir), access);
 
 	Readlink =>
 		rr = r := ref Rnfs.Readlink;
@@ -750,43 +568,21 @@ if(dflag) say(sprint("access, path %q, access 0x%x (requested 0x%x", path, acces
 
 	Read =>
 		rr = r := ref Rnfs.Read;
-		path := fhget(t.fh);
-		if(path == nil) {
-			r.r = ref Rread.Fail (nfs->Estale, nil);
-			break;
+		ffd := fhopen(t.fh, Sys->OREAD, 1);
+		if(ffd == nil || (n := sys->pread(ffd, rbuf := array[min(t.count, Sys->ATOMICIO)] of byte, len rbuf, t.offset)) < 0)
+			r.r = ref Rread.Fail (errno(), nil);
+		else {
+			(ok, dir) := sys->fstat(ffd);
+			if(ok == 0)
+				attr := ref dir2attr(dir);
+			eof := n==0;
+			r.r = ref Rread.Ok (attr, n, eof, rbuf[:n]);
 		}
-		# xxx should probably cache opens... per user?
-		ffd := sys->open(path, Sys->OREAD);
-		if(ffd == nil) {
-			r.r = ref Rread.Fail (errno(), getattr(path).t0);
-			break;
-		}
-		count := t.count;
-		if(count > Sys->ATOMICIO)
-			count = Sys->ATOMICIO;
-		rbuf := array[count] of byte;
-		n := sys->pread(ffd, rbuf, len rbuf, t.offset);
-		if(n < 0) {
-			r.r = ref Rread.Fail (errno(), getattr(path).t0);
-			break;
-		}
-		r.r = ref Rread.Ok (getattr(path).t0, n, n==0, rbuf[:n]);
 
 	Write =>
 		rr = r := ref Rnfs.Write;
-		path := fhget(t.fh);
-		if(path == nil) {
-			r.r = ref Rwrite.Fail (nfs->Estale, nilwd);
-			break;
-		}
-		# xxx should probably cache opens... per user?
-		ffd := sys->open(path, Sys->OWRITE);
-		if(ffd == nil) {
-			r.r = ref Rwrite.Fail (errno(), nilwd);
-			break;
-		}
-		n := sys->pwrite(ffd, t.data, len t.data, t.offset);
-		if(n != len t.data) {
+		ffd := fhopen(t.fh, Sys->OWRITE, 1);
+		if(ffd == nil || sys->pwrite(ffd, t.data, len t.data, t.offset) != len t.data) {
 			r.r = ref Rwrite.Fail (errno(), nilwd);
 			break;
 		}
@@ -796,35 +592,23 @@ if(dflag) say(sprint("access, path %q, access 0x%x (requested 0x%x", path, acces
 			;
 		nfs->WriteDatasync or
 		nfs->WriteFilesync =>
-			if(sys->wstat(path, sys->nulldir) < 0) {
+			if(fhwstat(t.fh, sys->nulldir) < 0) {
 				r.r = ref Rwrite.Fail (errno(), nilwd);
 				break Top;
 			}
 			how = nfs->WriteFilesync;
 		* =>
-			raise "internal error";
+			raise "missing case";
 		}
-		r.r = ref Rwrite.Ok (nilwd, n, how, verfcookie);
+		r.r = ref Rwrite.Ok (nilwd, len t.data, how, verifier(ffd));
 
 	Create =>
 		rr = r := ref Rnfs.Create;
 		r.r = e := ref Rchange.Fail;
 		e.weak = nilwd;
 
-		dirpath := fhget(t.where.fh);
-		if(dirpath == nil) {
-			e.status = nfs->Estale;
-			break;
-		}
-		if(badname(t.where.name)) {
-			e.status = nfs->Einval;
-			break;
-		}
-
-		npath := makepath(dirpath, t.where.name);
-		mode := Sys->ORDWR;
+		mode := Sys->OREAD;
 		perm := 8r777;
-		sattr: ref Sattr;
 		pick c := t.createhow {
 		Unchecked =>
 			if(c.attr.setmode)
@@ -836,64 +620,37 @@ if(dflag) say(sprint("access, path %q, access 0x%x (requested 0x%x", path, acces
 		Exclusive =>
 			mode |= Sys->OEXCL;
 		}
-		nfd := sys->create(npath, mode, perm);
-		if(nfd == nil) {
+		fh := fhcreate(t.where.fh, t.where.name, mode, perm);
+		if(fh == nil) {
 			e.status = errno();
 			break;
 		}
-		if(sattr != nil) {
-			(dir, bad) := sattr2dir(*sattr);
-			if(sys->wstat(npath, dir) < 0) {
-				e.status = errno();
-				break;
-			}
-			if(bad) {
-				e.status = nfs->Einval;
-				break;
-			}
-		}
-
-		nfh := fhput(npath);
-		r.r = ref Rchange.Ok (nfh, getattr(npath).t0, nilwd);
+		# xxx wstat ?
+		r.r = ref Rchange.Ok (fh, fhattr(fh), nilwd);
 
 	Mkdir =>
 		rr = r := ref Rnfs.Mkdir;
 		r.r = e := ref Rchange.Fail;
 		e.weak = nilwd;
 
-		dirpath := fhget(t.where.fh);
-		if(dirpath == nil) {
-			e.status = nfs->Estale;
-			break;
-		}
-		if(badname(t.where.name)) {
-			e.status = nfs->Einval;
-			break;
-		}
-		npath := makepath(dirpath, t.where.name);
 		perm := 8r777;
 		if(t.attr.setmode)
 			perm = t.attr.mode&8r777;
-		nfd := sys->create(npath, Sys->OREAD|Sys->OEXCL, Sys->DMDIR|perm);
-		if(nfd == nil) {
-if(dflag) say(sprint("create dir %q: %r", npath));
+		fh := fhcreate(t.where.fh, t.where.name, Sys->OREAD, Sys->DMDIR|perm);
+		if(fh == nil) {
 			e.status = errno();
 			break;
 		}
 
-		(ndir, bad) := sattr2dir(t.attr);
-		if(sys->wstat(npath, ndir) < 0) {
-			warn(sprint("wstat %q, for mkdir: %r", npath));
-			e.status = errno();
-			break;
-		}
-		if(bad) {
+		t.attr.setmode = 0;
+		# could skip fhwstat when remaining t.attr is nulldir...
+		(ndir, bad) := sattr2dir(t.attr, 0);
+		if(bad)
 			e.status = nfs->Einval;
-			break;
-		}
-
-		nfh := fhput(npath);
-		r.r = ref Rchange.Ok (nfh, getattr(npath).t0, nilwd);
+		else if(fhwstat(fh, ndir) < 0)
+			e.status = errno();
+		else
+			r.r = ref Rchange.Ok (fh, fhattr(fh), nilwd);
 
 	Symlink =>
 		rr = r := ref Rnfs.Symlink;
@@ -906,89 +663,48 @@ if(dflag) say(sprint("create dir %q: %r", npath));
 	Remove =>
 		rr = r := ref Rnfs.Remove;
 		r.weak = nilwd;
-		dirpath := fhget(t.where.fh);
-		if(dirpath == nil) {
-			r.status = nfs->Estale;
-			break;
-		}
-		if(badname(t.where.name)) {
-			r.status = nfs->Einval;
-			break Top;
-		}
-		path := makepath(dirpath, t.where.name);
-		if(sys->remove(path) < 0) {
+		fh := fhlookup(t.where.fh, t.where.name);
+		if(fh != nil)
+			path := fhpath(fh);
+		if(path == nil || sys->remove(path) < 0)
 			r.status = errno();
-			break;
-		}
-		r.status = nfs->Eok;
+		else
+			r.status = nfs->Eok;
 
 	Rmdir =>
 		rr = r := ref Rnfs.Rmdir;
 		r.weak = nilwd;
-		dirpath := fhget(t.where.fh);
-		if(dirpath == nil) {
-			r.status = nfs->Estale;
-			break;
-		}
-		if(badname(t.where.name)) {
-			r.status = nfs->Einval;
-			break Top;
-		}
-		path := makepath(dirpath, t.where.name);
-		if(sys->remove(path) < 0) {
+		fh := fhlookup(t.where.fh, t.where.name);
+		if(fh != nil)
+			path := fhpath(fh);
+		if(path == nil || sys->remove(path) < 0)
 			r.status = errno();
-			break;
-		}
-		r.status = nfs->Eok;
+		else
+			r.status = nfs->Eok;
 
 	Rename =>
 		rr = r := ref Rnfs.Rename;
 		r.fromdir = nilwd;
 		r.todir = nilwd;
 
-		odirpath := fhget(t.owhere.fh);
-		ndirpath := fhget(t.nwhere.fh);
-		if(odirpath == nil || ndirpath == nil) {
-			r.status = nfs->Estale;
-			break;
-		}
-		if(odirpath != ndirpath) {
-			# we don't support renames to different directories
+		if(t.owhere.fh != t.nwhere.fh || badname(t.nwhere.name)) {
 			r.status = nfs->Einval;
 			break;
 		}
-		if(badname(t.owhere.name)) {
-			r.status = nfs->Einval;
-			break Top;
-		}
-		if(badname(t.nwhere.name)) {
-			r.status = nfs->Einval;
-			break Top;
-		}
-		opath := makepath(odirpath, t.owhere.name);
-
 		ndir := sys->nulldir;
 		ndir.name = t.nwhere.name;
-		if(sys->wstat(opath, ndir) < 0) {
+		fh := fhlookup(t.owhere.fh, t.owhere.name);
+		if(fh == nil || fhwstat(fh, ndir) < 0)
 			r.status = errno();
-			break;
-		}
-
-		r.status = nfs->Eok;
+		else
+			r.status = nfs->Eok;
 
 	Link =>
 		rr = ref Rnfs.Link (nil, nfs->Enotsupp, nil, nilwd);
 
 	Readdir =>
 		rr = r := ref Rnfs.Readdir;
-		path := fhget(t.fh);
-		if(path == nil) {
-if(dflag) say("readdir, stale");
-			r.r = ref Rreaddir.Fail (nfs->Estale, nil);
-			break;
-		}
-		attr := getattr(path).t0;
-		(dh, status) := getdir(t.cookie, attr, path);
+		(dh, attr, status) := dirget(t.fh, t.cookieverf, t.cookie);
 		if(dh == nil) {
 			r.r = ref Rreaddir.Fail (status, nil);
 			break;
@@ -996,24 +712,20 @@ if(dflag) say("readdir, stale");
 
 		eof := 0;
 		entries: list of Entry;
-		cookie := t.cookie;
+		cookie := int t.cookie;
 		rsize := pboolattr(nil, 0, attr)+8+4+4; # attributes, cookieverf, 0 entries, eof
 		for(;;) {
 			(ok, ncookie, dir) := dirnext(dh, cookie);
 			if(ok < 0) {
-if(dflag) say("dirnext failed");
 				r.r = ref Rreaddir.Fail (errno(), nil);
-				dirdel(dh);
+				dirput(dh);
 				break Top;
 			}
-			if(ncookie < big 0) {
-if(dflag) say("end of dir reached");
+			if(ncookie < 0) {
 				eof = 1;
-				if(len entries == 0) # openbsd ignores eof flag, and then silently fails on Ebadcookie... keep around.
-					dirdel(dh);
 				break;
 			}
-			e := Entry (dir.qid.path, dir.name, ncookie);
+			e := Entry (dir.qid.path, dir.name, big ncookie);
 			esize := entrysize(e);
 			if(rsize+esize > t.count)
 				break;
@@ -1027,18 +739,13 @@ if(dflag) say(sprint("readdir, len entries %d, eof %d", len entries, eof));
 		i := len entries-1;
 		for(; entries != nil; entries = tl entries)
 			ents[i--] = hd entries;
-		r.r = ref Rreaddir.Ok (attr, verfcookie, ents, eof);
+		r.r = ref Rreaddir.Ok (attr, dh.verf, ents, eof);
+		dirput(dh);
 
 	Readdirplus =>
 		rr = r := ref Rnfs.Readdirplus;
-		path := fhget(t.fh);
-		if(path == nil) {
-if(dflag) say("readdirplus, stale");
-			r.r = ref Rreaddirplus.Fail (nfs->Estale, nil);
-			break;
-		}
-		attr := getattr(path).t0;
-		(dh, status) := getdir(t.cookie, attr, path);
+
+		(dh, attr, status) := dirget(t.fh, t.cookieverf, t.cookie);
 		if(dh == nil) {
 			r.r = ref Rreaddirplus.Fail (status, nil);
 			break;
@@ -1046,22 +753,18 @@ if(dflag) say("readdirplus, stale");
 
 		eof := 0;
 		entries: list of Entryplus;
-		cookie := t.cookie;
+		cookie := int t.cookie;
 		rsize := pboolattr(nil, 0, attr)+8+4+4; # attr+cookieverf+0 entries+eof
 		dsize := 0;
 		for(;;) {
 			(ok, ncookie, dir) := dirnext(dh, cookie);
 			if(ok < 0) {
-if(dflag) say("dirnext failed");
 				r.r = ref Rreaddirplus.Fail (errno(), nil);
-				dirdel(dh);
+				dirput(dh);
 				break Top;
 			}
-			if(ncookie < big 0) {
-if(dflag) say("end of dir reached");
+			if(ncookie < 0) {
 				eof = 1;
-				if(len entries == 0)  # see case for normal readdir
-					dirdel(dh);
 				break;
 			}
 
@@ -1069,8 +772,7 @@ if(dflag) say("end of dir reached");
 			# sending a file handle for each entryplus seems superfluous.
 			# but linux' in-kernel nfs client seems to treat absent file handles as zero-length file handles,
 			# so include a file handle to help linux clients.
-			npath := makepath(path, dir.name);
-			e := Entryplus (dir.qid.path, dir.name, ncookie, getattr(npath).t0, fhput(npath));
+			e := Entryplus (dir.qid.path, dir.name, big ncookie, ref dir2attr(dir), fhlookupdir(t.fh, dir));
 			esize0 := entryplussize(e, 0);
 			esize1 := entryplussize(e, 1);
 			if(rsize+esize1 >= t.maxcount || dsize+esize0 >= t.dircount)
@@ -1086,17 +788,17 @@ if(dflag) say(sprint("readdirplus, len entries %d, eof %d", len entries, eof));
 		i := len entries-1;
 		for(; entries != nil; entries = tl entries)
 			ents[i--] = hd entries;
-		r.r = ref Rreaddirplus.Ok (attr, verfcookie, ents, eof);
+		r.r = ref Rreaddirplus.Ok (attr, dh.verf, ents, eof);
+		dirput(dh);
 
 	Fsstat =>
 		rr = r := ref Rnfs.Fsstat;
-		path := fhget(t.rootfh);
-		if(path == nil) {
-			r.r = ref Rfsstat.Fail (nfs->Estale, nil);
+		r.r = e := ref Rfsstat.Ok;
+		e.attr = fhattr(t.rootfh);
+		if(e.attr == nil) {
+			r.r = ref Rfsstat.Fail (errno(), nil);
 			break;
 		}
-		r.r = e := ref Rfsstat.Ok;
-		(e.attr, nil) = getattr(path);
 		e.tbytes = big 0;  # total
 		e.fbytes = big 0;  # free
 		e.abytes = big 0;  # available to user
@@ -1107,13 +809,12 @@ if(dflag) say(sprint("readdirplus, len entries %d, eof %d", len entries, eof));
 
 	Fsinfo =>
 		rr = r := ref Rnfs.Fsinfo;
-		path := fhget(t.rootfh);
-		if(path == nil) {
-			r.r = ref Rfsinfo.Fail (nfs->Estale, nil);
+		r.r = e := ref Rfsinfo.Ok;
+		e.attr = fhattr(t.rootfh);
+		if(e.attr == nil) {
+			r.r = ref Rfsinfo.Fail (errno(), nil);
 			break;
 		}
-		r.r = e := ref Rfsinfo.Ok;
-		(e.attr, nil) = getattr(path);
 		e.rtmax = Sys->ATOMICIO;
 		e.rtpref = Sys->ATOMICIO;
 		e.rtmult = 8;
@@ -1128,13 +829,13 @@ if(dflag) say(sprint("readdirplus, len entries %d, eof %d", len entries, eof));
 
 	Pathconf =>
 		rr = r := ref Rnfs.Pathconf;
-		path := fhget(t.fh);	
-		if(path == nil) {
-			r.r = ref Rpathconf.Fail (nfs->Estale, nil);
+		(ok, dir) := fhstat(t.fh);
+		if(ok != 0) {
+			r.r = ref Rpathconf.Fail (errno(), nil);
 			break;
 		}
 		e := r.r = ref Rpathconf.Ok;
-		e.attr = getattr(path).t0;
+		e.attr = ref dir2attr(dir);
 		e.linkmax = 1;
 		e.namemax = 1024;
 		e.notrunc = 1;
@@ -1144,16 +845,10 @@ if(dflag) say(sprint("readdirplus, len entries %d, eof %d", len entries, eof));
 
 	Commit =>
 		rr = r := ref Rnfs.Commit;
-		path := fhget(t.fh);
-		if(path == nil) {
-			r.r = ref Rcommit.Fail (nfs->Estale, nilwd);
-			break;
-		}
-		if(sys->wstat(path, sys->nulldir) != 0) {
+		if(fhwstat(t.fh, sys->nulldir) < 0)
 			r.r = ref Rcommit.Fail (errno(), nilwd);
-			break;
-		}
-		r.r = ref Rcommit.Ok (nilwd, verfcookie);
+		else
+			r.r = ref Rcommit.Ok (nilwd, fhverifier(t.fh));
 
 	* =>
 		raise "internal error";
@@ -1163,6 +858,431 @@ if(dflag) say(sprint("readdirplus, len entries %d, eof %d", len entries, eof));
 	return sunrpc->writerpc(fd, pre, pre==nil, rr);
 }
 
+dirget(fh: array of byte, verf, bcookie: big): (ref Dh, ref Attr, int)
+{
+	last := int bcookie;
+	if(bcookie != big last)
+		return (nil, nil, nfs->Ebadcookie);
+
+	rc := chan of (ref Dh, ref Attr, int);
+	finddirc <-= (fh, verf, last, rc);
+	return <-rc;
+}
+
+dirput(dh: ref Dh)
+{
+	dirc <-= dh;
+}
+
+cleanpid := -1;
+main()
+{
+loop:
+	for(;;) alt {
+	<-cleanc =>
+		# clean up dirs that are not busy and last use was >90 seconds ago.
+		dr: list of ref Dh;
+		dhold := dt->now()-90;
+		for(dl := dirhandles; dl != nil; dl = tl dl) {
+			dh := hd dl;
+			if(dh.busy || dh.use >= dhold)
+				dr = dh::dr;
+		}
+		dirhandles = dr;
+
+		# clean up file handles with last use >300 seconds ago.
+		fr: list of ref Fh;
+		fhold := dt->now()-300;
+		for(fl := filehandles; fl != nil; fl = tl fl) {
+			fh := hd fl;
+			if(fh.use >= fhold)
+				fr = fh::fr;
+		}
+		filehandles = fr;
+
+		# clean up fd's with last use >15 seconds ago
+		fdr: list of ref Fd;
+		fdold := dt->now()-15;
+		for(fdl := fdcache; fdl != nil; fdl = tl fdl) {
+			fd := hd fdl;
+			if(fd.use >= fdold)
+				fdr = fd::fdr;
+		}
+		fdcache = fdr;
+
+		if(dirhandles == nil && filehandles == nil && fdcache == nil) {
+			kill(cleanpid);
+			cleanpid = -1;
+		}
+
+	(fh, verf, last, rc) := <-finddirc =>
+		# find by verf,cookie
+		if(last != 0)
+		for(l := dirhandles; l != nil; l = tl l) {
+			dh := hd l;
+			if(dh.busy || dh.verf != verf || !dirhas(dh, last))
+				continue;
+
+			(ok, dir) := sys->fstat(dh.fd);
+			if(ok != 0 || dir2verifier(dir) != verf) {
+				rc <-= (nil, nil, nfs->Ebadcookie);
+			} else {
+				dh.use = dt->now();
+				dh.busy = 1;
+				rc <-= (dh, ref dir2attr(dir), 0);
+			}
+			continue loop;
+		}
+
+		# init new dh
+		spawn newdir(fh, verf, last, rc);
+
+	dh := <-newdirc =>
+		dirhandles = dh::dirhandles;
+		if(cleanpid < 0) {
+			spawn cleaner(pidc := chan of int);
+			cleanpid = <-pidc;
+		}
+
+	dh := <-dirc =>
+		if(!dh.busy)
+			raise "not busy?";
+		dh.busy = 0;
+
+	(v, rc) := <-fhfindc =>
+		f: ref Fh;
+		for(l := filehandles; l != nil; l = tl l)
+			if((hd l).fh == v) {
+				f = hd l;
+				f.use = dt->now();
+				break;
+			}
+		rc <-= f;
+
+	(path, rc) := <-fhgetpathc =>
+		f: ref Fh;
+		for(l := filehandles; l != nil; l = tl l)
+			if((hd l).path == path) {
+				f = hd l;
+				f.use = dt->now();
+				break;
+			}
+		if(f == nil) {
+			f = ref Fh (fhgen++, path, dt->now());
+			filehandles = f::filehandles;
+			if(cleanpid < 0) {
+				spawn cleaner(pidc := chan of int);
+				cleanpid = <-pidc;
+			}
+		}
+		rc <-= f;
+
+	(fh, path, mode, rc) := <-fdopenc =>
+		for(l := fdcache; l != nil; l = tl l) {
+			f := hd l;
+			if(f.mode == mode && eq(fh, f.fh)) {
+				f.use = dt->now();
+				rc <-= (f.fd, nil);
+				continue loop;
+			}
+		}
+
+		fd := sys->open(path, mode);
+		if(fd == nil) {
+			rc <-= (nil, sprint("%r"));
+		} else {
+			rc <-= (fd, nil);
+			f := ref Fd (fh, mode, fd, dt->now());
+			fdcache = f::fdcache;
+			if(cleanpid < 0) {
+				spawn cleaner(pidc := chan of int);
+				cleanpid = <-pidc;
+			}
+		}
+	}
+}
+
+cleaner(pidc: chan of int)
+{
+	pidc <-= pid();
+	for(;;) {
+		sys->sleep(10*1000);
+		cleanc <-= 1;
+	}
+}
+
+newdir(fh: array of byte, verf: big, cookie: int, rc: chan of (ref Dh, ref Attr, int))
+{
+	(dh, attr, status) := newdir0(fh, verf, cookie);
+	if(dh != nil) {
+		dh.busy = 1;
+		dh.use = dt->now();
+		newdirc <-= dh;
+	}
+	rc <-= (dh, attr, status);
+}
+
+newdir0(fh: array of byte, verf: big, last: int): (ref Dh, ref Attr, int)
+{
+	fd := fhopen(fh, Sys->OREAD, 0);
+	if(fd == nil)
+		return (nil, nil, errno());
+	(ok, dir) := sys->fstat(fd);
+	if(ok != 0)
+		return (nil, nil, errno());
+	nverf := dir2verifier(dir);
+	if(verf != big 0 && verf != nverf)
+		return (nil, nil, nfs->Ebadcookie);
+
+	dh := ref Dh (fd, nil, 1, nverf, dt->now(), 0);
+	next := last+1;
+	while(next > dh.off+len dh.dirs) {
+		(n, dirs) := sys->dirread(dh.fd);
+		if(n < 0)
+			return (nil, nil, errno());
+		if(n == 0)
+			return (nil, nil, nfs->Ebadcookie);
+		dh.off += len dh.dirs;
+		dh.dirs = dirs;
+	}
+
+	return (dh, ref dir2attr(dir), 0);
+}
+
+# whether Dh has the last (offset) or next one to read will be it
+dirhas(dh: ref Dh, last: int): int
+{
+	return last >= dh.off && last <= dh.off+len dh.dirs;
+}
+
+dirnext(dh: ref Dh, last: int): (int, int, Sys->Dir)
+{
+	next := last+1;
+	if(next == dh.off+len dh.dirs) {
+		(n, dirs) := sys->dirread(dh.fd);
+		if(n <= 0)
+			return (n, -1, sys->zerodir);
+		dh.off += len dh.dirs;
+		dh.dirs = dirs;
+	}
+	return (0, next, dh.dirs[next-dh.off]);
+}
+
+fhfind(v: big): ref Fh
+{
+	if(fhqidpath)
+		raise "fhfind with fhqidpath";
+	fhfindc <-= (v, rc := chan of ref Fh);
+	return <-rc;
+}
+
+fhgetpath(path: string): ref Fh
+{
+	if(fhqidpath)
+		raise "fhfindpath with fhqidpath";
+	fhgetpathc <-= (path, rc := chan of ref Fh);
+	return <-rc;
+}
+
+fhbuf(v: big): array of byte
+{
+	buf := array[8] of byte;
+	p64(buf, 0, v);
+	return buf;
+}
+
+fhpathbuf(buf: array of byte): array of byte
+{
+	if(1+len buf > nfs->Filehandlesizemax)
+		raise "bad buf";
+	fh := array[1+len buf] of byte;
+	fh[0] = ~byte 0;
+	fh[1:] = buf;
+	return fh;
+}
+
+fhputpath(path: string): array of byte
+{
+	buf := array of byte path;
+	if(1+len buf <= nfs->Filehandlesizemax)
+		return fhpathbuf(buf);
+
+	f := fhgetpath(path);
+	return fhbuf(f.fh);
+}
+
+path2fh(path: string): array of byte
+{
+	if(fhqidpath) {
+		(ok, dir) := sys->stat(path);
+		if(ok != 0)
+			return nil;
+		return fhbuf(dir.qid.path);
+	}
+
+	buf := array of byte path;
+	if(1+len path > nfs->Filehandlesizemax)
+		return nil;	# not supported
+	return fhpathbuf(buf);
+}
+
+fhpath(fh: array of byte): string
+{
+	if(len fh == 0) {
+		sys->werrstr(Ebadarg);
+		return nil;
+	}
+	if(fhqidpath) {
+		if(len fh != 8) {
+			sys->werrstr(Ebadarg);
+			return nil;
+		}
+		return pathdir+"/"+sprint("%bux", g64(fh, 0).t0);
+	}
+
+	if(fh[0] == ~byte 0)
+		return string fh[1:];
+
+	if(len fh != 8) {
+		sys->werrstr(Ebadarg);
+		return nil;
+	}
+	f := fhfind(g64(fh, 0).t0);
+	if(f == nil)
+		return nil;
+	return f.path;
+}
+
+fhlookup(fh: array of byte, name: string): array of byte
+{
+	if(name == "" || len fh == 0) {
+		sys->werrstr(Ebadarg);
+		return nil;
+	}
+	if(name == ".")
+		return fh;
+
+	if(fhqidpath) {
+		if(len fh != 8) {
+			sys->werrstr(Ebadarg);
+			return nil;
+		}
+		p := g64(fh, 0).t0;
+		path: string;
+		case name {
+		".." =>	path = pathupdir+"/"+sprint("%bux", p);
+		* =>	path = pathdir+"/"+sprint("%bux", p)+"/"+name;
+		}
+		(ok, dir) := sys->stat(path);
+		if(ok != 0)
+			return nil;
+		return fhbuf(dir.qid.path);
+	}
+
+	path := fhpath(fh);
+	if(path == nil)
+		return nil;
+	if(name == "..") {
+		path = str->splitstrr(path, "/").t0;
+		if(path != "/")
+			path = "/";
+	} else {
+		if(path != "/")
+			path += "/";
+		path += name;
+	}
+	(ok, nil) := sys->stat(path);
+	if(ok != 0)
+		return nil;
+	return fhputpath(path);
+}
+
+fhlookupdir(fh: array of byte, dir: Sys->Dir): array of byte
+{
+	if(fhqidpath)
+		return fhbuf(dir.qid.path);
+	return fhlookup(fh, dir.name);
+}
+
+fhstat(fh: array of byte): (int, Sys->Dir)
+{
+	p := fhpath(fh);
+	if(p == nil)
+		return (-1, sys->zerodir);
+	return sys->stat(p);
+}
+
+fhwstat(fh: array of byte, dir: Sys->Dir): int
+{
+	p := fhpath(fh);
+	if(p == nil)
+		return -1;
+	return sys->wstat(p, dir);
+}
+
+fhopen(fh: array of byte, mode: int, usecache: int): ref Sys->FD
+{
+	p := fhpath(fh);
+	if(p == nil)
+		return nil;
+	if(usecache) {
+		fdopenc <-= (fh, p, mode, rc := chan of (ref Sys->FD, string));
+		(fd, err) := <-rc;
+		if(err != nil)
+			sys->werrstr(err);
+		return fd;
+	}
+	return sys->open(p, mode);
+}
+
+fhcreate(fh: array of byte, name: string, mode, perm: int): array of byte
+{
+	p := fhpath(fh);
+	if(p == nil)
+		return nil;
+	if(p != "/")
+		p += "/";
+	p += name;
+	fd := sys->create(p, mode, perm);
+	if(fd == nil)
+		return nil;
+	if(fhqidpath) {
+		(ok, dir) := sys->fstat(fd);
+		if(ok != 0)
+			return nil;
+		return fhbuf(dir.qid.path);
+	}
+	return fhputpath(p);
+}
+
+fhattr(fh: array of byte): ref Attr
+{
+	(ok, dir) := fhstat(fh);
+	if(ok == 0)
+		attr := ref dir2attr(dir);
+	return attr;
+}
+
+dir2verifier(dir: Sys->Dir): big
+{
+	return (big dir.qid.vers<<32)|big dir.mtime;
+}
+
+fhverifier(fh: array of byte): big
+{
+	(ok, dir) := fhstat(fh);
+	if(ok != 0)
+		return big 0;
+	return dir2verifier(dir);
+}
+
+verifier(fd: ref Sys->FD): big
+{
+	(ok, dir) := sys->fstat(fd);
+	if(ok != 0)
+		return big 0;
+	return dir2verifier(dir);
+}
 
 fstypes := array[] of {
 nfs->FTreg => "reg",
@@ -1173,29 +1293,59 @@ nfs->FTlnk => "lnk",
 nfs->FTsock => "sock",
 nfs->FTfifo => "fifo",
 };
-getattr(p: string): (ref Attr, int)
+dir2attr(dir: Sys->Dir): Attr
 {
-	(ok, dir) := sys->stat(p);
-	if(ok < 0)
-		return (nil, errno());
-	a := ref Attr;
+	a: Attr;
 	a.ftype = nfs->FTreg;
 	if(dir.mode&Sys->DMDIR)
 		a.ftype = nfs->FTdir;
 	a.mode = dir.mode&8r777;
-	a.nlink = 1;
-	a.uid = a.gid = 0;  # xxx map uname,gname -> uid,gid
+	a.nlink = 2;	# force copy of write for users try to do that
+	a.uid = name2uid(dir.uid);
+	a.gid = name2gid(dir.gid);
 	a.size = a.used = dir.length;
 	a.rdev.major = 0;
 	a.rdev.minor = 0;
 	a.fsid = (big dir.dtype<<32)|(big dir.dev);
 	a.fileid = dir.qid.path;
-	if(a.fileid == big 0)
-		a.fileid = ~big 0;  # nfs warns against using 0 as fileid
 	a.atime = dir.atime;
 	a.mtime = a.ctime = dir.mtime;
-if(dflag) say(sprint("getattr path %q, type %s, mode %o size %bud", p, fstypes[a.ftype], a.mode, a.size));
-	return (a, 0);
+if(dflag) say(sprint("dir2attr, type %s, mode %o size %bud", fstypes[a.ftype], a.mode, a.size));
+	return a;
+}
+
+badname(s: string): int
+{
+	return s == "" || s == "." || s == "..";
+}
+
+sattr2dir(s: Sattr, mode: int): (Sys->Dir, int)
+{
+	bad := 0;
+	ndir := sys->nulldir;
+	if(s.setmode) {
+		ndir.mode = (mode&~8r777) | (s.mode&8r777);
+		bad = bad || s.mode&~(Sys->DMDIR|8r777);
+	}
+	if(s.setuid)
+		ndir.uid = uid2name(s.uid);
+	if(s.setgid)
+		ndir.gid = gid2name(s.gid);
+	if(s.setsize)
+		ndir.length = s.size;
+	case s.setatime {
+	nfs->SETdontchange =>	;
+	nfs->SETtoservertime =>	ndir.atime = dt->now();
+	nfs->SETtoclienttime =>	ndir.atime = s.atime;
+	* =>	bad = 1;
+	}
+	case s.setmtime {
+	nfs->SETdontchange =>	;
+	nfs->SETtoservertime =>	ndir.mtime = dt->now();
+	nfs->SETtoclienttime =>	ndir.mtime = s.mtime;
+	* =>	bad = 1;
+	}
+	return (ndir, bad);
 }
 
 entrysize(e: Entry): int
@@ -1221,6 +1371,8 @@ if(dflag) say(sprint("errno, s %q, v %d", s, v));
 	return v;
 }
 
+Ebadarg: con "bad arg in system call";
+
 errnomap := array[] of {
 (nfs->Eperm,	"permission denied"),
 (nfs->Enoent,	"does not exist"),
@@ -1237,7 +1389,7 @@ errnomap := array[] of {
 errno0(s: string): int
 {
 	for(i := 0; i < len errnomap; i++)
-		if(index(errnomap[i].t1, s))
+		if(index(errnomap[i].t1, s) >= 0)
 			return errnomap[i].t0;
 	return nfs->Eserverfault;
 }
