@@ -1,3 +1,25 @@
+# nfssrv.
+#
+# we can run in two modes.  with fhqidpath or with paths.  with fhqidpath,
+# file handles are 8 bytes, the qid.path of the files.  with paths,
+# we encode the path in the file handle if it fits, otherwise we map
+# it to an 8-byte number we keep track of internally (this makes
+# nfssrv stateless for larger paths in this mode).
+# for fhqidpath, we need two styx fd's: one in which we can open
+# qid.path's, and one in which we can open parents of qid.path's.
+# without fhqidpath we need one styx fd, the one serving all the
+# files.
+#
+# we can run with or without user/group mapping.  when running
+# without, all file operations are done by a single thread, with a
+# single mount(2) of the styx file descriptor(s).  when running with
+# a user/group mapping, each rpc uid->username gets its own prog to
+# do file operations on.  such progs do their mount(s) of the styx
+# file descriptor(s), so all operations occur as the user.
+#
+# file handles are global to all connections, they are just mappings to paths.
+# anything with file descriptors cannot be, they must be per-user.
+
 implement Nfssrv;
 
 include "sys.m";
@@ -8,8 +30,6 @@ include "arg.m";
 include "bufio.m";
 	bufio: Bufio;
 	Iobuf: import bufio;
-include "daytime.m";
-	dt: Daytime;
 include "string.m";
 	str: String;
 include "tables.m";
@@ -17,7 +37,7 @@ include "tables.m";
 	Table, Strhash: import tables;
 include "util0.m";
 	util: Util0;
-	l2a, eq, pid, fail, warn, min, max, hex, kill, killgrp, index: import util;
+	readfile, writefile, l2a, eq, pid, fail, warn, min, max, hex, index: import util;
 include "sunrpc.m";
 	sunrpc: Sunrpc;
 	g32, g64, gopaque, p32, p64, popaque, pstr, pboolopaque, Authsys: import sunrpc;
@@ -37,49 +57,15 @@ Nfssrv: module {
 	init:	fn(nil: ref Draw->Context, args: list of string);
 };
 
-dflag: int;
-nfsport := 2049;
-mntport := 39422;
-root := "/";	# from command-line
-srvroot: string;  # for mnttransact, the location of root after possible bind of root on /
-protocol: string;  # nil is both tcp & udp, otherwise it's the protocol specified
-regfd: ref Sys->FD;  # global, so we keep a reference until nfssrv dies
-nilwd: Weakdata;
-uname: string;
-
-Int: adt {
-	v:	int;
-};
-
-userfile,
-groupfile:	string;
-uids,
-gids: ref Table[string];
-users,
-groups:	ref Strhash[ref Int];
-
-pathdir,
-pathupdir: string;
-fhqidpath: int;
-
-fhgen := big 1;
 
 Dh: adt {
 	fd:	ref Sys->FD;
 	dirs:	array of Sys->Dir;
 	off:	int;	# dirs starts at off, first is 1 , to let cookie 0 be special
 	verf:	big;
-	use:	int;	# time of last use
+	use:	int;	# last use
 	busy:	int;	# whether handed out by main()
 };
-dirhandles: list of ref Dh;
-
-Fh: adt {
-	fh:	big;
-	path:	string;
-	use:	int;	# time of last use
-};
-filehandles: list of ref Fh;
 
 # for plain files only
 Fd: adt {
@@ -88,22 +74,79 @@ Fd: adt {
 	fd:	ref Sys->FD;
 	use:	int;	# last use
 };
-fdcache: list of ref Fd;
 
+Srv: adt {
+	uid:	int;
+	uname:	string;
+	srvpid:	int;
+	mgrpid:	int;
+
+	nfsc:	chan of (ref Tnfs, chan of ref Rnfs);
+	mntc:	chan of (ref Tmnt, chan of ref Rmnt);
+
+	cleanpid:	int;
+	fdcache:	list of ref Fd;
+	dirhandles:	list of ref Dh;
+
+	cleanc:		chan of int;
+	finddirc:	chan of (array of byte, big, int, chan of (ref Dh, ref Attr, int));
+	dirc:		chan of ref Dh;
+	newdirc:	chan of ref Dh;
+	fdopenc:	chan of (array of byte, string, int, chan of (ref Sys->FD, string));
+};
+
+dflag: int;
+
+nfsport := 2049;
+mntport := 39422;
+protocol: string;  # nil is both tcp & udp, otherwise it's the protocol specified
+regfd: ref Sys->FD;  # global, so we keep a reference until nfssrv dies
+timefd: ref Sys->FD;
+defuser: string;	# fallback user to execute nfs/mnt operations as
+
+styxfd: ref Sys->FD;
+
+# for fhqidpath mode
+qidpathaname,
+qidpathanameup,
+pathstyxmtpt,
+pathstyxupmtpt: string;
+rootqidpath: big;
+fhqidpath: int;
+
+uidsrv: ref Table[ref Srv];
+defsrv: ref Srv; # used when without user/group file
+
+Int: adt {
+	v:	int;
+};
+userfile,
+groupfile:	string;
+uids,
+gids: ref Table[string];
+users,
+groups:	ref Strhash[ref Int];
+
+Fh: adt {
+	fh:	big;
+	path:	string;
+	use:	int;	# last use
+};
+fhgen := big 1;
+filehandles: list of ref Fh;
+
+uidc: chan of (int, chan of ref Srv);
 cleanc: chan of int;
-finddirc: chan of (array of byte, big, int, chan of (ref Dh, ref Attr, int));
-dirc: chan of ref Dh;
-newdirc: chan of ref Dh;
 fhfindc: chan of (big, chan of ref Fh);
 fhgetpathc: chan of (string, chan of ref Fh);
-fdopenc: chan of (array of byte, string, int, chan of (ref Sys->FD, string));
+
+nilwd: Weakdata;
 
 init(nil: ref Draw->Context, args: list of string)
 {
 	sys = load Sys Sys->PATH;
 	arg := load Arg Arg->PATH;
 	bufio = load Bufio Bufio->PATH;
-	dt = load Daytime Daytime->PATH;
 	str = load String String->PATH;
 	tables = load Tables Tables->PATH;
 	util = load Util0 Util0->PATH;
@@ -116,7 +159,7 @@ init(nil: ref Draw->Context, args: list of string)
 	nfs->init();
 
 	arg->init(args);
-	arg->setusage(arg->progname()+" [-d] [-n nfsport] [-m mntport] [-p udp|tcp] [-s pathdir pathupdir] [-t passwd group] [root]");
+	arg->setusage(arg->progname()+" [-d] [-n nfsport] [-m mntport] [-p udp|tcp] [-t passwd group] [-s aname anameup mtpt mtptup rootqidpath] styxfile");
 	while((c := arg->opt()) != 0)
 		case c {
 		'd' =>	dflag++;
@@ -131,8 +174,11 @@ init(nil: ref Draw->Context, args: list of string)
 				arg->usage();
 			}
 		's' =>
-			pathdir = arg->earg();
-			pathupdir = arg->earg();
+			qidpathaname = arg->earg();
+			qidpathanameup = arg->earg();
+			pathstyxmtpt = arg->earg();
+			pathstyxupmtpt = arg->earg();
+			rootqidpath = str->tobig(arg->earg(), 16).t0;
 			fhqidpath = 1;
 		't' =>
 			userfile = arg->earg();
@@ -140,38 +186,48 @@ init(nil: ref Draw->Context, args: list of string)
 		* =>	arg->usage();
 		}
 	args = arg->argv();
-	if(len args > 1)
+	if(len args != 1)
 		arg->usage();
-	if(args != nil)
-		root = hd args;
-	if(fhqidpath)
-		srvroot = root;
-	else
-		srvroot = "/";
+
+	sys->pctl(Sys->NEWPGRP, nil);
+
+	defuserbuf := readfile("/dev/user", -1);
+	if(len defuserbuf == 0)
+		fail(sprint("/dev/user: %r"));
+	defuser = string defuserbuf;
+	say(sprint("defuser: %q", defuser));
+
+	timefd = sys->open("/dev/time", Sys->OREAD);
+	if(timefd == nil)
+		fail(sprint("open /dev/time: %r"));
+
+	f := hd args;
+	styxfd = sys->open(f, Sys->ORDWR);
+	if(styxfd == nil)
+		fail(sprint("open %q: %r", f));
+
 	sunrpc->dflag = max(0, dflag-2);
 	mnt->dflag = max(0, dflag-1);
 	nfs->dflag = max(0, dflag-1);
+
+	if(userfile == nil) {
+		defsrv = startsrv(0, defuser);
+		if(defsrv == nil)
+			failall("starting default srv failed");
+	} else
+		uidsrv = uidsrv.new(31, nil);
 
 	if(userfile != nil) {
 		uids = uids.new(31, nil);
 		users = users.new(31, nil);
 		readpasswd(userfile);
+		defuser = "none";
 	}
 	if(groupfile != nil) {
 		gids = gids.new(31, nil);
 		groups = groups.new(31, nil);
 		readgroup(groupfile);
 	}
-
-	uname = "none";
-	fd := sys->open("/dev/user", Sys->OREAD);
-	if(fd != nil) {
-		n := sys->readn(fd, buf := array[128] of byte, len buf);
-		if(n > 0)
-			uname = string buf[:n];
-	}
-
-	sys->pctl(Sys->NEWPGRP, nil);
 
 	regfd = sys->open("/chan/portmapper", Sys->OWRITE);
 	if(regfd == nil)
@@ -185,25 +241,90 @@ init(nil: ref Draw->Context, args: list of string)
 	if(protocol != "tcp" && sys->fprint(regfd, "add %d %d udp %d\n", nfs->ProgNfs, nfs->VersNfs, nfsport) < 0)
 		failall(sprint("registering nfs udp: %r"));
 
+	uidc = chan of (int, chan of ref Srv);
 	cleanc = chan of int;
-	finddirc = chan of (array of byte, big, int, chan of (ref Dh, ref Attr, int));
-	dirc = chan of ref Dh;
-	newdirc = chan of ref Dh;
 	fhfindc = chan of (big, chan of ref Fh);
 	fhgetpathc = chan of (string, chan of ref Fh);
-	fdopenc = chan of (array of byte, string, int, chan of (ref Sys->FD, string));
 
-	spawn listen(nfsport, nfssrv);
-	spawn listenudp(nfsport, nfstransact);
-	spawn listen(mntport, mntsrv);
-	spawn listenudp(mntport, mnttransact);
+	if(protocol != "udp") {
+		spawn listen(nfsport, nfssrv);
+		spawn listen(mntport, mntsrv);
+	}
+	if(protocol != "tcp") {
+		spawn listenudp(nfsport, nfstransact);
+		spawn listenudp(mntport, mnttransact);
+	}
 	spawn main();
+}
+
+startsrv(uid: int, name: string): ref Srv
+{
+	nfsc := chan of (ref Tnfs, chan of ref Rnfs);
+	mntc := chan of (ref Tmnt, chan of ref Rmnt);
+
+	finddirc := chan of (array of byte, big, int, chan of (ref Dh, ref Attr, int));
+	dirc := chan of ref Dh;
+	newdirc := chan of ref Dh;
+	fdopenc := chan of (array of byte, string, int, chan of (ref Sys->FD, string));
+
+	srv := ref Srv (uid, name, -1, -1, nfsc, mntc, -1, nil, nil, chan of int, finddirc, dirc, newdirc, fdopenc);
+
+	spawn startsrv0(srv, okc := chan of int);
+	ok := <-okc;
+	if(!ok)
+		return nil;
+	return srv;
+}
+
+startsrv0(srv: ref Srv, okc: chan of int)
+{
+	if(dflag) say(sprint("startsrv0, for name %#q", srv.uname));
+	err := writefile("/dev/user", 0, array of byte srv.uname);
+	if(err != nil) {
+		warn(sprint("srv, writing %#q to /dev/user: %r", srv.uname));
+		okc <-= 0;
+		return;
+	}
+	sys->pctl(Sys->NEWNS, nil);
+	sys->chdir("/");
+	if(fhqidpath) {
+		r0 := sys->mount(styxfd, nil, pathstyxmtpt, Sys->MREPL, qidpathaname);
+		if(r0 < 0 || sys->mount(styxfd, nil, pathstyxupmtpt, Sys->MREPL, qidpathanameup) < 0) {
+			warn(sprint("srv, mounts for user %#q: %r", srv.uname));
+			okc <-= 0;
+			return;
+		}
+	} else {
+		if(sys->mount(styxfd, nil, "/", Sys->MREPL|Sys->MCREATE, nil) < 0) {
+			warn(sprint("srv, mount for user %#q: %r", srv.uname));
+			okc <-= 0;
+			return;
+		}
+	}
+
+	spawn srv0(srv, pidc := chan of int);
+	srv.srvpid = <-pidc;
+	spawn mgr(srv, pidc);
+	srv.mgrpid = <-pidc;
+	okc <-= 1;
+}
+
+srv0(srv: ref Srv, pidc: chan of int)
+{
+	pidc <-= pid();
+	for(;;) alt {
+	(t, rc) := <-srv.mntc =>
+		rc <-= mntexec(t);
+
+	(t, rc) := <-srv.nfsc =>
+		rc <-= nfsexec(srv, t);
+	}
 }
 
 uid2name(uid: int): string
 {
 	if(uids == nil)
-		return "none";
+		return defuser;
 	s := uids.find(uid);
 	if(s == nil)
 		s = "none";
@@ -223,7 +344,7 @@ name2uid(name: string): int
 gid2name(gid: int): string
 {
 	if(gids == nil)
-		return "none";
+		return defuser;
 	s := gids.find(gid);
 	if(s == nil)
 		s = "none";
@@ -330,11 +451,6 @@ listenudp(port: int, transact: ref fn(buf, pre: array of byte, fd: ref Sys->FD):
 	if(fd == nil)
 		fail(sprint("udp data: %r"));
 	say("announced udp");
-	if(!fhqidpath && root != "/") {
-		sys->pctl(Sys->FORKNS, nil);
-		if(sys->bind(root, "/", Sys->MREPL) < 0)
-			failall(sprint("bind %q: %r", root));
-	}
 	buf := array[52+64*1024] of byte;
 	for(;;) {
 		n := sys->read(fd, buf, len buf);
@@ -344,7 +460,7 @@ listenudp(port: int, transact: ref fn(buf, pre: array of byte, fd: ref Sys->FD):
 			fail(sprint("short udp read, length %d < 52", n));
 		err := transact(buf[52:n], buf[:52], fd);
 		if(err != nil)
-			warn(err);
+			say(err);
 	}
 }
 
@@ -358,11 +474,6 @@ alarm(apid: int, pidc: chan of int)
 
 mntsrv(fd: ref Sys->FD)
 {
-	if(!fhqidpath && root != "/") {
-		sys->pctl(Sys->FORKNS, nil);
-		if(sys->bind(root, "/", Sys->MREPL) < 0)
-			return warn(sprint("bind %q /: %r", root));
-	}
 	spawn alarm(pid(), pidc := chan of int);
 	apid := <-pidc;
 	for(;;) {
@@ -370,7 +481,7 @@ mntsrv(fd: ref Sys->FD)
 		if(err == nil)
 			err = mnttransact(buf, nil, fd);
 		if(err != nil) {
-			warn(err);
+			say(err);
 			break;
 		}
 	}
@@ -390,19 +501,34 @@ mnttransact(buf, pre: array of byte, fd: ref Sys->FD): string
 	} exception e {
 	Badrpc =>
 		r := e.t2;
-		warn("mnt, badrpc: "+e.t0);
+		say("mnt, badrpc: "+e.t0);
 		return sunrpc->writerpc(fd, pre, pre==nil, r);
 	Parse =>
 		return "parsing request: "+e;
 	}
-
-	say("-> "+tt.text());
 
 	if(tagof tt != tagof Tnfs.Null && as == nil) {
 		rbadauth := ref Rrpc.Autherror (tt.r.xid, sunrpc->AUtooweak);
 		return sunrpc->writerpc(fd, pre, pre==nil, rbadauth);
 	}
 
+	srv := defsrv;
+	if(srv == nil) {
+		uidc <-= (as.uid, rc := chan of ref Srv);
+		srv = <-rc;
+		if(srv == nil) {
+			rbadauth := ref Rrpc.Autherror (tt.r.xid, sunrpc->AUrejectedcred);
+			return sunrpc->writerpc(fd, pre, pre==nil, rbadauth);
+		}
+	}
+
+	srv.mntc <-= (tt, rc := chan of ref Rmnt);
+	r := <-rc;
+	return sunrpc->writerpc(fd, pre, pre==nil, r);
+}
+
+mntexec(tt: ref Tmnt): ref Rmnt
+{
 	r: ref Rmnt;
 	nullauth: Auth;
 	nullauth.which = sunrpc->Anone;
@@ -414,7 +540,7 @@ mnttransact(buf, pre: array of byte, fd: ref Sys->FD): string
 	Mnt =>
 		say("mnt, mnt");
 		status := Mntrpc->Eok;
-		fh := path2fh(srvroot);
+		fh := path2fh(t.dirpath);
 		if(fh == nil)
 			status = errno();
 		auths := array[] of {sunrpc->Asys};
@@ -435,24 +561,17 @@ mnttransact(buf, pre: array of byte, fd: ref Sys->FD): string
 	* =>
 		raise "internal error";
 	}
-	say("<- "+r.text());
-	return sunrpc->writerpc(fd, pre, pre==nil, r);
+	return r;
 }
-
 
 nfssrv(fd: ref Sys->FD)
 {
-	if(!fhqidpath && root != nil) {
-		sys->pctl(Sys->FORKNS, nil);
-		if(sys->bind(root, "/", Sys->MREPL) < 0)
-			return warn(sprint("bind %q /: %r", root));
-	}
 	for(;;) {
 		(buf, err) := sunrpc->readmsg(fd);
 		if(err == nil)
 			err = nfstransact(buf, nil, fd);
 		if(err != nil)
-			return warn(err);
+			return say(err);
 	}
 }
 
@@ -467,19 +586,33 @@ nfstransact(buf, pre: array of byte, fd: ref Sys->FD): string
 	} exception e {
 	Badrpc =>
 		r := e.t2;
-		warn("nfs, bad rpc: "+e.t0);
+		say("nfs, bad rpc: "+e.t0);
 		return sunrpc->writerpc(fd, pre, pre==nil, r);
 	Parse =>
 		return "parsing request: "+e;
 	}
-
-	say("<- "+tt.text());
 
 	if(tagof tt != tagof Tnfs.Null && as == nil) {
 		rbadauth := ref Rrpc.Autherror (tt.r.xid, sunrpc->AUtooweak);
 		return sunrpc->writerpc(fd, pre, pre==nil, rbadauth);
 	}
 
+	srv := defsrv;
+	if(srv == nil) {
+		uidc <-= (as.uid, rc := chan of ref Srv);
+		srv = <-rc;
+		if(srv == nil) {
+			rbadauth := ref Rrpc.Autherror (tt.r.xid, sunrpc->AUrejectedcred);
+			return sunrpc->writerpc(fd, pre, pre==nil, rbadauth);
+		}
+	}
+	srv.nfsc <-= (tt, rc := chan of ref Rnfs);
+	r := <-rc;
+	return sunrpc->writerpc(fd, pre, pre==nil, r);
+}
+
+nfsexec(srv: ref Srv, tt: ref Tnfs): ref Rnfs
+{
 	rr: ref Rnfs;
 	nullauth: Auth;
 	nullauth.which = sunrpc->Anone;
@@ -537,16 +670,12 @@ Top:
 			break;
 		}
 
-		# we can only approximate...
-		# if we are owner, use owner perms.
-		# otherwise see if we are group.
-		# otherwise use other's perms.
-		# we can't determine if we are part of other groups.
+		# only an approximation, actual operations will show the truth.
 		access := 0;
 		perm: int;
-		if(dir.uid == uname)
+		if(dir.uid == srv.uname)
 			perm = dir.mode>>6;
-		else if(dir.gid == uname)
+		else if(dir.gid == srv.uname)
 			perm = dir.mode>>3;
 		else
 			perm = dir.mode;
@@ -555,7 +684,7 @@ Top:
 		if(perm&8r4) br = ~0;
 		if(perm&8r2) bw = ~0;
 		if(perm&8r1) bx = ~0;
-		if(dflag) say(sprint("mode 8r%uo, uid %q gid %q uname %q, perm 8r%uo", dir.mode, dir.uid, dir.gid, uname, perm));
+		if(dflag) say(sprint("mode 8r%uo, uid %q gid %q uname %q, perm 8r%uo", dir.mode, dir.uid, dir.gid, srv.uname, perm));
 		if(dflag) say(sprint("perm 8r%uo, br %ux bw %ux bx %ux", perm, br, bw, bx));
 		access |= nfs->ACread&br;
 		access |= (nfs->ACmodify|nfs->ACextend|nfs->ACdelete)&bw;
@@ -568,7 +697,7 @@ Top:
 
 	Read =>
 		rr = r := ref Rnfs.Read;
-		ffd := fhopen(t.fh, Sys->OREAD, 1);
+		ffd := fhopen(srv, t.fh, Sys->OREAD, 1);
 		if(ffd == nil || (n := sys->pread(ffd, rbuf := array[min(t.count, Sys->ATOMICIO)] of byte, len rbuf, t.offset)) < 0)
 			r.r = ref Rread.Fail (errno(), nil);
 		else {
@@ -581,7 +710,7 @@ Top:
 
 	Write =>
 		rr = r := ref Rnfs.Write;
-		ffd := fhopen(t.fh, Sys->OWRITE, 1);
+		ffd := fhopen(srv, t.fh, Sys->OWRITE, 1);
 		if(ffd == nil || sys->pwrite(ffd, t.data, len t.data, t.offset) != len t.data) {
 			r.r = ref Rwrite.Fail (errno(), nilwd);
 			break;
@@ -704,7 +833,7 @@ Top:
 
 	Readdir =>
 		rr = r := ref Rnfs.Readdir;
-		(dh, attr, status) := dirget(t.fh, t.cookieverf, t.cookie);
+		(dh, attr, status) := dirget(srv, t.fh, t.cookieverf, t.cookie);
 		if(dh == nil) {
 			r.r = ref Rreaddir.Fail (status, nil);
 			break;
@@ -718,7 +847,7 @@ Top:
 			(ok, ncookie, dir) := dirnext(dh, cookie);
 			if(ok < 0) {
 				r.r = ref Rreaddir.Fail (errno(), nil);
-				dirput(dh);
+				dirput(srv, dh);
 				break Top;
 			}
 			if(ncookie < 0) {
@@ -732,20 +861,18 @@ Top:
 			rsize += esize;
 			entries = e::entries;
 			cookie = ncookie;
-if(dflag) say(e.text());
 		}
-if(dflag) say(sprint("readdir, len entries %d, eof %d", len entries, eof));
 		ents := array[len entries] of Entry;
 		i := len entries-1;
 		for(; entries != nil; entries = tl entries)
 			ents[i--] = hd entries;
 		r.r = ref Rreaddir.Ok (attr, dh.verf, ents, eof);
-		dirput(dh);
+		dirput(srv, dh);
 
 	Readdirplus =>
 		rr = r := ref Rnfs.Readdirplus;
 
-		(dh, attr, status) := dirget(t.fh, t.cookieverf, t.cookie);
+		(dh, attr, status) := dirget(srv, t.fh, t.cookieverf, t.cookie);
 		if(dh == nil) {
 			r.r = ref Rreaddirplus.Fail (status, nil);
 			break;
@@ -760,7 +887,7 @@ if(dflag) say(sprint("readdir, len entries %d, eof %d", len entries, eof));
 			(ok, ncookie, dir) := dirnext(dh, cookie);
 			if(ok < 0) {
 				r.r = ref Rreaddirplus.Fail (errno(), nil);
-				dirput(dh);
+				dirput(srv, dh);
 				break Top;
 			}
 			if(ncookie < 0) {
@@ -781,15 +908,13 @@ if(dflag) say(sprint("readdir, len entries %d, eof %d", len entries, eof));
 			dsize += esize0;
 			entries = e::entries;
 			cookie = ncookie;
-if(dflag) say(e.text());
 		}
-if(dflag) say(sprint("readdirplus, len entries %d, eof %d", len entries, eof));
 		ents := array[len entries] of Entryplus;
 		i := len entries-1;
 		for(; entries != nil; entries = tl entries)
 			ents[i--] = hd entries;
 		r.r = ref Rreaddirplus.Ok (attr, dh.verf, ents, eof);
-		dirput(dh);
+		dirput(srv, dh);
 
 	Fsstat =>
 		rr = r := ref Rnfs.Fsstat;
@@ -854,107 +979,60 @@ if(dflag) say(sprint("readdirplus, len entries %d, eof %d", len entries, eof));
 		raise "internal error";
 	}
 	rr.m = rok;
-	if(dflag) say("-> "+rr.text());
-	return sunrpc->writerpc(fd, pre, pre==nil, rr);
+	return rr;
 }
 
-dirget(fh: array of byte, verf, bcookie: big): (ref Dh, ref Attr, int)
+dirget(srv: ref Srv, fh: array of byte, verf, bcookie: big): (ref Dh, ref Attr, int)
 {
 	last := int bcookie;
 	if(bcookie != big last)
 		return (nil, nil, nfs->Ebadcookie);
 
 	rc := chan of (ref Dh, ref Attr, int);
-	finddirc <-= (fh, verf, last, rc);
+	srv.finddirc <-= (fh, verf, last, rc);
 	return <-rc;
 }
 
-dirput(dh: ref Dh)
+dirput(srv: ref Srv, dh: ref Dh)
 {
-	dirc <-= dh;
+	srv.dirc <-= dh;
 }
 
 cleanpid := -1;
 main()
 {
-loop:
 	for(;;) alt {
-	<-cleanc =>
-		# clean up dirs that are not busy and last use was >90 seconds ago.
-		dr: list of ref Dh;
-		dhold := dt->now()-90;
-		for(dl := dirhandles; dl != nil; dl = tl dl) {
-			dh := hd dl;
-			if(dh.busy || dh.use >= dhold)
-				dr = dh::dr;
+	(uid, rc) := <-uidc =>
+		srv := uidsrv.find(uid);
+		if(srv == nil) {
+			name := uid2name(uid);
+			srv = startsrv(uid, name);
+			if(srv != nil)
+				uidsrv.add(uid, srv);
 		}
-		dirhandles = dr;
+		rc <-= srv;
 
+	<-cleanc =>
 		# clean up file handles with last use >300 seconds ago.
 		fr: list of ref Fh;
-		fhold := dt->now()-300;
+		fhold := now()-300;
 		for(fl := filehandles; fl != nil; fl = tl fl) {
 			fh := hd fl;
 			if(fh.use >= fhold)
 				fr = fh::fr;
 		}
 		filehandles = fr;
-
-		# clean up fd's with last use >15 seconds ago
-		fdr: list of ref Fd;
-		fdold := dt->now()-15;
-		for(fdl := fdcache; fdl != nil; fdl = tl fdl) {
-			fd := hd fdl;
-			if(fd.use >= fdold)
-				fdr = fd::fdr;
-		}
-		fdcache = fdr;
-
-		if(dirhandles == nil && filehandles == nil && fdcache == nil) {
+		if(filehandles == nil) {
 			kill(cleanpid);
 			cleanpid = -1;
 		}
-
-	(fh, verf, last, rc) := <-finddirc =>
-		# find by verf,cookie
-		if(last != 0)
-		for(l := dirhandles; l != nil; l = tl l) {
-			dh := hd l;
-			if(dh.busy || dh.verf != verf || !dirhas(dh, last))
-				continue;
-
-			(ok, dir) := sys->fstat(dh.fd);
-			if(ok != 0 || dir2verifier(dir) != verf) {
-				rc <-= (nil, nil, nfs->Ebadcookie);
-			} else {
-				dh.use = dt->now();
-				dh.busy = 1;
-				rc <-= (dh, ref dir2attr(dir), 0);
-			}
-			continue loop;
-		}
-
-		# init new dh
-		spawn newdir(fh, verf, last, rc);
-
-	dh := <-newdirc =>
-		dirhandles = dh::dirhandles;
-		if(cleanpid < 0) {
-			spawn cleaner(pidc := chan of int);
-			cleanpid = <-pidc;
-		}
-
-	dh := <-dirc =>
-		if(!dh.busy)
-			raise "not busy?";
-		dh.busy = 0;
 
 	(v, rc) := <-fhfindc =>
 		f: ref Fh;
 		for(l := filehandles; l != nil; l = tl l)
 			if((hd l).fh == v) {
 				f = hd l;
-				f.use = dt->now();
+				f.use = now();
 				break;
 			}
 		rc <-= f;
@@ -964,24 +1042,92 @@ loop:
 		for(l := filehandles; l != nil; l = tl l)
 			if((hd l).path == path) {
 				f = hd l;
-				f.use = dt->now();
+				f.use = now();
 				break;
 			}
 		if(f == nil) {
-			f = ref Fh (fhgen++, path, dt->now());
+			f = ref Fh (fhgen++, path, now());
 			filehandles = f::filehandles;
 			if(cleanpid < 0) {
-				spawn cleaner(pidc := chan of int);
+				spawn cleaner(cleanc, pidc := chan of int);
 				cleanpid = <-pidc;
 			}
 		}
 		rc <-= f;
+	}
+}
 
-	(fh, path, mode, rc) := <-fdopenc =>
-		for(l := fdcache; l != nil; l = tl l) {
+mgr(srv: ref Srv, mpidc: chan of int)
+{
+	mpidc <-= pid();
+
+loop:
+	for(;;) alt {
+	<-srv.cleanc =>
+		# clean up dirs that are not busy and last use was >90 seconds ago.
+		dr: list of ref Dh;
+		dhold := now()-90;
+		for(dl := srv.dirhandles; dl != nil; dl = tl dl) {
+			dh := hd dl;
+			if(dh.busy || dh.use >= dhold)
+				dr = dh::dr;
+		}
+		srv.dirhandles = dr;
+
+		# clean up fd's with last use >15 seconds ago
+		fdr: list of ref Fd;
+		fdold := now()-15;
+		for(fdl := srv.fdcache; fdl != nil; fdl = tl fdl) {
+			fd := hd fdl;
+			if(fd.use >= fdold)
+				fdr = fd::fdr;
+		}
+		srv.fdcache = fdr;
+
+		if(srv.dirhandles == nil && srv.fdcache == nil) {
+			kill(srv.cleanpid);
+			srv.cleanpid = -1;
+		}
+
+	(fh, verf, last, rc) := <-srv.finddirc =>
+		# find by verf,cookie
+		if(last != 0)
+		for(l := srv.dirhandles; l != nil; l = tl l) {
+			dh := hd l;
+			if(dh.busy || dh.verf != verf || !dirhas(dh, last))
+				continue;
+
+			(ok, dir) := sys->fstat(dh.fd);
+			if(ok != 0 || dir2verifier(dir) != verf) {
+				rc <-= (nil, nil, nfs->Ebadcookie);
+			} else {
+				dh.use = now();
+				dh.busy = 1;
+				rc <-= (dh, ref dir2attr(dir), 0);
+			}
+			continue loop;
+		}
+
+		# init new dh
+		spawn newdir(srv, fh, verf, last, rc);
+
+	dh := <-srv.newdirc =>
+		srv.dirhandles = dh::srv.dirhandles;
+		if(srv.cleanpid < 0) {
+			spawn cleaner(srv.cleanc, pidc := chan of int);
+			srv.cleanpid = <-pidc;
+		}
+
+	dh := <-srv.dirc =>
+		if(!dh.busy)
+			raise "not busy?";
+		dh.busy = 0;
+
+	(fh, path, mode, rc) := <-srv.fdopenc =>
+		for(l := srv.fdcache; l != nil; l = tl l) {
 			f := hd l;
 			if(f.mode == mode && eq(fh, f.fh)) {
-				f.use = dt->now();
+				f.use = now();
 				rc <-= (f.fd, nil);
 				continue loop;
 			}
@@ -992,39 +1138,39 @@ loop:
 			rc <-= (nil, sprint("%r"));
 		} else {
 			rc <-= (fd, nil);
-			f := ref Fd (fh, mode, fd, dt->now());
-			fdcache = f::fdcache;
-			if(cleanpid < 0) {
-				spawn cleaner(pidc := chan of int);
-				cleanpid = <-pidc;
+			f := ref Fd (fh, mode, fd, now());
+			srv.fdcache = f::srv.fdcache;
+			if(srv.cleanpid < 0) {
+				spawn cleaner(srv.cleanc, pidc := chan of int);
+				srv.cleanpid = <-pidc;
 			}
 		}
 	}
 }
 
-cleaner(pidc: chan of int)
+cleaner(rc: chan of int, pidc: chan of int)
 {
 	pidc <-= pid();
 	for(;;) {
 		sys->sleep(10*1000);
-		cleanc <-= 1;
+		rc <-= 1;
 	}
 }
 
-newdir(fh: array of byte, verf: big, cookie: int, rc: chan of (ref Dh, ref Attr, int))
+newdir(srv: ref Srv, fh: array of byte, verf: big, cookie: int, rc: chan of (ref Dh, ref Attr, int))
 {
-	(dh, attr, status) := newdir0(fh, verf, cookie);
+	(dh, attr, status) := newdir0(srv, fh, verf, cookie);
 	if(dh != nil) {
 		dh.busy = 1;
-		dh.use = dt->now();
-		newdirc <-= dh;
+		dh.use = now();
+		srv.newdirc <-= dh;
 	}
 	rc <-= (dh, attr, status);
 }
 
-newdir0(fh: array of byte, verf: big, last: int): (ref Dh, ref Attr, int)
+newdir0(srv: ref Srv, fh: array of byte, verf: big, last: int): (ref Dh, ref Attr, int)
 {
-	fd := fhopen(fh, Sys->OREAD, 0);
+	fd := fhopen(srv, fh, Sys->OREAD, 0);
 	if(fd == nil)
 		return (nil, nil, errno());
 	(ok, dir) := sys->fstat(fd);
@@ -1034,7 +1180,7 @@ newdir0(fh: array of byte, verf: big, last: int): (ref Dh, ref Attr, int)
 	if(verf != big 0 && verf != nverf)
 		return (nil, nil, nfs->Ebadcookie);
 
-	dh := ref Dh (fd, nil, 1, nverf, dt->now(), 0);
+	dh := ref Dh (fd, nil, 1, nverf, now(), 0);
 	next := last+1;
 	while(next > dh.off+len dh.dirs) {
 		(n, dirs) := sys->dirread(dh.fd);
@@ -1114,12 +1260,17 @@ fhputpath(path: string): array of byte
 path2fh(path: string): array of byte
 {
 	if(fhqidpath) {
-		(ok, dir) := sys->stat(path);
+		p := sprint("%s/%bux/%s", pathstyxmtpt, rootqidpath, path);
+		(ok, dir) := sys->stat(p);
 		if(ok != 0)
 			return nil;
 		return fhbuf(dir.qid.path);
 	}
 
+	if(path != "/") {
+		sys->werrstr(Eperm);
+		return nil;
+	}
 	buf := array of byte path;
 	if(1+len path > nfs->Filehandlesizemax)
 		return nil;	# not supported
@@ -1137,7 +1288,7 @@ fhpath(fh: array of byte): string
 			sys->werrstr(Ebadarg);
 			return nil;
 		}
-		return pathdir+"/"+sprint("%bux", g64(fh, 0).t0);
+		return sprint("%s/%bux", pathstyxmtpt, g64(fh, 0).t0);
 	}
 
 	if(fh[0] == ~byte 0)
@@ -1170,8 +1321,8 @@ fhlookup(fh: array of byte, name: string): array of byte
 		p := g64(fh, 0).t0;
 		path: string;
 		case name {
-		".." =>	path = pathupdir+"/"+sprint("%bux", p);
-		* =>	path = pathdir+"/"+sprint("%bux", p)+"/"+name;
+		".." =>	path = sprint("%s/%bux", pathstyxupmtpt, p);
+		* =>	path = sprint("%s/%bux/%s", pathstyxmtpt, p, "/"+name);
 		}
 		(ok, dir) := sys->stat(path);
 		if(ok != 0)
@@ -1220,13 +1371,13 @@ fhwstat(fh: array of byte, dir: Sys->Dir): int
 	return sys->wstat(p, dir);
 }
 
-fhopen(fh: array of byte, mode: int, usecache: int): ref Sys->FD
+fhopen(srv: ref Srv, fh: array of byte, mode: int, usecache: int): ref Sys->FD
 {
 	p := fhpath(fh);
 	if(p == nil)
 		return nil;
 	if(usecache) {
-		fdopenc <-= (fh, p, mode, rc := chan of (ref Sys->FD, string));
+		srv.fdopenc <-= (fh, p, mode, rc := chan of (ref Sys->FD, string));
 		(fd, err) := <-rc;
 		if(err != nil)
 			sys->werrstr(err);
@@ -1335,13 +1486,13 @@ sattr2dir(s: Sattr, mode: int): (Sys->Dir, int)
 		ndir.length = s.size;
 	case s.setatime {
 	nfs->SETdontchange =>	;
-	nfs->SETtoservertime =>	ndir.atime = dt->now();
+	nfs->SETtoservertime =>	ndir.atime = now();
 	nfs->SETtoclienttime =>	ndir.atime = s.atime;
 	* =>	bad = 1;
 	}
 	case s.setmtime {
 	nfs->SETdontchange =>	;
-	nfs->SETtoservertime =>	ndir.mtime = dt->now();
+	nfs->SETtoservertime =>	ndir.mtime = now();
 	nfs->SETtoclienttime =>	ndir.mtime = s.mtime;
 	* =>	bad = 1;
 	}
@@ -1372,6 +1523,7 @@ if(dflag) say(sprint("errno, s %q, v %d", s, v));
 }
 
 Ebadarg: con "bad arg in system call";
+Eperm: con "permission denied";
 
 errnomap := array[] of {
 (nfs->Eperm,	"permission denied"),
@@ -1392,6 +1544,26 @@ errno0(s: string): int
 		if(index(errnomap[i].t1, s) >= 0)
 			return errnomap[i].t0;
 	return nfs->Eserverfault;
+}
+
+# called from progs that bind styxfd on /, meaning they have no /dev/time
+now(): int
+{
+	n := sys->pread(timefd, buf := array[16] of byte, len buf, big 0);
+	if(n <= 0)
+		return 0;
+	return int (big string buf[:n]/big 1000000);
+}
+
+# same as now()
+kill(pid: int)
+{
+	writefile(sprint("#p/%d/ctl", pid), 0, array of byte "kill");
+}
+
+killgrp(pid: int)
+{
+	writefile(sprint("#p/%d/ctl", pid), 0, array of byte "killgrp");
 }
 
 say(s: string)

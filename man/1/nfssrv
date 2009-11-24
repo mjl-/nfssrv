@@ -1,13 +1,10 @@
 .TH nfssrv 1
 .SH NAME
-nfssrv - nfs server, version 3
+nfssrv - NFS server, version 3
 .SH synopsis
 .B nfssrv
 [
 .B -d
-] [
-.B -p
-.I udp|tcp
 ] [
 .B -n
 .I nfsport
@@ -15,17 +12,48 @@ nfssrv - nfs server, version 3
 .B -m
 .I mntport
 ] [
-.I root
+.B -p
+.I udp|tcp
+] [
+.B -t
+.I passwd
+.I group
+] [
+.B -s
+.I aname
+.I anameup
+.I mtpt
+.I mtptup
+.I rootqidpath
 ]
+.I styxfile
 .SH DESCRIPTION
 .B Nfssrv
-is an NFSv3 server.  It exports and serves the single ``mount point''
-.I root
-.RI (`` / ''
-by default).
-Nfssrv has no way of verifying access permissions for the uid & gid
-from the client.  Instead it simply executes all file operations
-as the user who started nfssrv.
+is an NFSv3 server, it also serves the mount protocol.  It exports files served by
+.I styxfile
+over NFS.
+.PP
+Nfssrv
+can operate in stateless and almost-stateless mode.  In stateless mode (when
+.B -s
+is specified) all NFS file handles are mapped directly to the
+``qid path'' of a file.  In this case
+.I styxfile
+must be a special file server that allows file look ups by ``qid
+path''.  See below for details.  In almost-stateless mode, paths
+up to 63 bytes long are stateless, beyond that they are not.  This
+can be problematic for clients that do not properly look up stale file
+handles.
+.PP
+Nfssrv only maps NFS uids and gids (integers) to styx uids and gids (strings) when
+.B -t
+has been specified.  With
+.B -t
+it also executes NFS requests with the permissions of the user name
+(after translation from NFS uid).  It does this by mounting the
+file system once for each user that connects.  Without
+.B -t
+all file accesses are executed as the user that started nfssrv.
 .PP
 Since Styx does not support ``special files'', such as (sym)links
 or device nodes, operations involving such file types are not
@@ -38,30 +66,72 @@ At startup, nfssrv registers itself with the portmapper through
 .B -d
 Print debug output.
 .TP
-.B -p
+.BI -n " nfsport"
+Listen on port
+.I nfsport
+for the NFS server, 2049 by default.
+.TP
+.BI -m " mntport"
+Listen on port
+.I mntport
+for the mnt service, 39422 by default.
+.TP
+.BI -p " udp|tcp"
 Listen only for the specified protocol,
 .I udp
 or
 .IR tcp .
 Nfssrv listens for both protocols by default.
 .TP
-.BI -n " nfsport"
-Listen on port
-.I nfsport
-for the nfs server, 2049 by default.
+.BI -t " user group"
+Read the files
+.I user
+and
+.I group
+in common unix passwd and groups format and use it for mapping NFS
+uids and gids (integers) to styx uids and gids (strings).  The styx
+user name (after translation from an NFS uid) is used in the styx
+attach message too, to enforce user permissions.
+If this option is not specified, styx names are all mapped to ``0'',
+and user id's are all mapped to ``none''.
 .TP
-.BI -m " mntport"
-Listen on port
-.I mntport
-for the mnt service, 39422 by default.
+.BI -s " aname anameup mtpt mtptup rootqidpath"
+Instead of mounting
+.I styxfile
+for normal files, mount it twice, once with attach specifier
+.I aname
+on
+.I mtpt
+and once with
+.I anameup
+on
+.IR mtptup .
+Use these paths to open files by their ``qid path'' and looking up
+the parent of a ``qid path'' respectively.  The file server behind
+.I styxfile
+must treat walks to hexadecimal numbers in its root directory as
+walks to the file with the ``qid path'' represented by that number.
+The root of the exported file system is represented by
+.IR rootqidpath .
+.SH EXAMPLE
+.EX
+portmapper &
+nfssrv <>{export -a /} &
+.EE
 .SH SOURCE
 .B /appl/cmd/nfssrv.b
 .br
+.B /appl/lib/nfsrpc.m
+.br
 .B /appl/lib/nfsrpc.b
+.br
+.B /appl/lib/mntrpc.m
 .br
 .B /appl/lib/mntrpc.b
 .br
 .B /appl/lib/sunrpc.b
+.br
+.B /module/sunrpc.m
 .SH SEE ALSO
 .IR portmapper (1),
 .br
@@ -71,4 +141,4 @@ RFC1831, ``Remote Procedure Call Protocol Version 2'',
 .br
 RFC4506, ``XDR: External Data Representation Standard''.
 .SH BUGS
-Nfssrv does not try to be smart.  For example, it does not have a duplicate request cache.
+Nfssrv does not try to be too smart.  For example, it does not have a duplicate request cache.
