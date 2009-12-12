@@ -288,7 +288,7 @@ Tnfs.unpack(m: ref Trpc, buf: array of byte): ref Tnfs raises (Badrpc, Badprog, 
 			(t.fh, o) = gfilehandle(buf, o);
 			(t.access, o) = g32(buf, o);
 			if(t.access&~ACmask)
-				raise Parse(sprint("Tnfs.Access, bad bits in access: 0x%x", t.access&~ACmask));
+				raise Parse(sprint("Tnfs.Access, bad bits in access: %#ux", t.access&~ACmask));
 		Mreadlink =>
 			tt = t := ref Tnfs.Readlink;
 			(t.fh, o) = gfilehandle(buf, o);
@@ -406,7 +406,7 @@ Tnfs.text(mm: self ref Tnfs): string
 	Getattr =>	s += "fh "+hex(m.fh);
 	Setattr =>	s += "fh "+hex(m.fh);
 	Lookup =>	s += wheretext(m.where);
-	Access =>	s += "fh "+hex(m.fh)+sprint(", access 0x%x", m.access);
+	Access =>	s += "fh "+hex(m.fh)+sprint(", access %#ux", m.access);
 	Readlink =>	s += "fh "+hex(m.fh);
 	Read =>		s += "fh "+hex(m.fh)+sprint(", offset %bud, count %d", m.offset, m.count);
 	Write =>	s += "fh "+hex(m.fh)+sprint(", offset %bud, count %d", m.offset, m.count);
@@ -468,7 +468,7 @@ Rnfs.pack(mm: self ref Rnfs, buf: array of byte, o: int): int
 			o = p32(buf, o, Eok);
 			o = pboolattr(buf, o, r.attr);
 			if(r.access&~ACmask)
-				raise sprint("Rnfs.Access, bad bits in access: 0x%x", r.access&~ACmask);
+				raise sprint("Rnfs.Access, bad bits in access: %#ux", r.access&~ACmask);
 			o = p32(buf, o, r.access);
 		Fail =>
 			o = p32(buf, o, r.status);
@@ -616,7 +616,7 @@ Rnfs.pack(mm: self ref Rnfs, buf: array of byte, o: int): int
 			o = p32(buf, o, r.timedelta.secs);
 			o = p32(buf, o, r.timedelta.nsecs);
 			if(r.props&~FSFmask)
-				raise sprint("Rnfs.Fsinfo.Ok, bad bits in props, 0x%x", r.props&~FSFmask);
+				raise sprint("Rnfs.Fsinfo.Ok, bad bits in props, %#ux", r.props&~FSFmask);
 			o = p32(buf, o, r.props);
 		Fail =>
 			o = p32(buf, o, r.status);
@@ -1214,7 +1214,7 @@ gsattr(buf: array of byte, o: int): (Sattr, int) raises Parse
 			(a.atime, o)	= g32(buf, o);
 			(nil, o)	= g32(buf, o);
 		* =>
-			raise Parse(sprint("bad value 0x%x for sattr.setatime", a.setatime));
+			raise Parse(sprint("bad value %#ux for sattr.setatime", a.setatime));
 		}
 		(a.setmtime, o) = g32(buf, o);
 		case a.setmtime {
@@ -1225,7 +1225,7 @@ gsattr(buf: array of byte, o: int): (Sattr, int) raises Parse
 			(a.mtime, o)	= g32(buf, o);
 			(nil, o)	= g32(buf, o);
 		* =>
-			raise Parse(sprint("bad value 0x%x for sattr.setmtime", a.setmtime));
+			raise Parse(sprint("bad value %#ux for sattr.setmtime", a.setmtime));
 		}
 		return (a, o);
 	} exception e {

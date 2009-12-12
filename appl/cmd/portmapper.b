@@ -9,7 +9,7 @@ include "string.m";
 	str: String;
 include "util0.m";
 	util: Util0;
-	fail, warn, max, kill, hex: import util;
+	warn, max, pid, kill, killgrp, hex: import util;
 include "sunrpc.m";
 	sunrpc: Sunrpc;
 	g32, gopaque, p32, popaque: import sunrpc;
@@ -25,6 +25,7 @@ Portmapper: module {
 };
 
 dflag: int;
+sflag: int;
 tcpaddr := "tcp!*!sunrpc";
 udpaddr := "udp!*!sunrpc";
 
@@ -56,12 +57,13 @@ init(nil: ref Draw->Context, args: list of string)
 	portmaprpc->init();
 
 	arg->init(args);
-	arg->setusage(arg->progname()+" [-d] [-t tcpaddr] [-u udpaddr]");
+	arg->setusage(arg->progname()+" [-ds] [-t tcpaddr] [-u udpaddr]");
 	while((c := arg->opt()) != 0)
 		case c {
 		'd' =>	dflag++;
 		't' =>	tcpaddr = arg->earg();
 		'u' =>	udpaddr = arg->earg();
+		's' =>	sflag++;
 		* =>	arg->usage();
 		}
 	args = arg->argv();
@@ -81,11 +83,18 @@ init(nil: ref Draw->Context, args: list of string)
 	dumpmapc = chan of chan of array of Map;
 
 	spawn register(regio);
-	if(tcpaddr != nil)
-		spawn listen(tcpaddr);
-	if(udpaddr != nil)
-		spawn listenudp(udpaddr);
-	main();
+	if(tcpaddr != nil) {
+		spawn listen(tcpaddr, rc := chan of int);
+		<-rc;
+	}
+	if(udpaddr != nil) {
+		spawn listenudp(udpaddr, rc := chan of int);
+		<-rc;
+	}
+	if(sflag)
+		main();
+	else
+		spawn main();
 }
 
 main()
@@ -200,12 +209,13 @@ register(fio: ref Sys->FileIO)
 }
 
 	
-listen(addr: string)
+listen(addr: string, rc: chan of int)
 {
 	(ok, aconn) := sys->announce(addr);
 	if(ok < 0)
 		fail(sprint("announce %q: %r", addr));
 	say("announced tcp");
+	rc <-= 1;
 	for(;;) {
 		(lok, lconn) := sys->listen(aconn);
 		if(lok < 0) {
@@ -223,7 +233,7 @@ listen(addr: string)
 	}
 }
 
-listenudp(addr: string)
+listenudp(addr: string, rc: chan of int)
 {
 	(ok, aconn) := sys->announce(addr);
 	if(ok < 0)
@@ -234,6 +244,7 @@ listenudp(addr: string)
 	if(fd == nil)
 		fail(sprint("udp data: %r"));
 	say("announced udp");
+	rc <-= 1;
 	buf := array[52+64*1024] of byte;
 	for(;;) {
 		n := sys->read(fd, buf, len buf);
@@ -336,4 +347,11 @@ say(s: string)
 {
 	if(dflag)
 		warn(s);
+}
+
+fail(s: string)
+{
+	warn(s);
+	killgrp(pid());
+	raise "fail:"+s;
 }

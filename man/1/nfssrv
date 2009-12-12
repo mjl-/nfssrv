@@ -4,7 +4,13 @@ nfssrv - NFS server, version 3
 .SH synopsis
 .B nfssrv
 [
+.B -c
+] [
 .B -d
+] [
+.B -D
+] [
+.B -s
 ] [
 .B -n
 .I nfsport
@@ -19,7 +25,7 @@ nfssrv - NFS server, version 3
 .I passwd
 .I group
 ] [
-.B -s
+.B -S
 .I aname
 .I anameup
 .I mtpt
@@ -35,7 +41,7 @@ over NFS.
 .PP
 Nfssrv
 can operate in stateless and almost-stateless mode.  In stateless mode (when
-.B -s
+.B -S
 is specified) all NFS file handles are mapped directly to the
 ``qid path'' of a file.  In this case
 .I styxfile
@@ -51,9 +57,11 @@ has been specified.  With
 .B -t
 it also executes NFS requests with the permissions of the user name
 (after translation from NFS uid).  It does this by mounting the
-file system once for each user that connects.  Without
+file system servec by
+.I styxfile
+once for each user that connects.  Without
 .B -t
-all file accesses are executed as the user that started nfssrv.
+all file operations are executed as the user that started nfssrv.
 .PP
 Since Styx does not support ``special files'', such as (sym)links
 or device nodes, operations involving such file types are not
@@ -63,8 +71,19 @@ At startup, nfssrv registers itself with the portmapper through
 .IR /chan/portmapper .
 .SS Options
 .TP
+.B -c
+After NFS file operations such as ``read'' and ``write'', return
+the new attributes of the file, to let the client better implement
+``weak cache consistency''.
+.TP
 .B -d
 Print debug output.
+.TP
+.B -D
+Print NFS message traces.
+.TP
+.B -s
+Stay in foreground.  By default nfssrv runs in the background after having claimed tcp & udp ports.
 .TP
 .BI -n " nfsport"
 Listen on port
@@ -95,7 +114,7 @@ attach message too, to enforce user permissions.
 If this option is not specified, styx names are all mapped to ``0'',
 and user id's are all mapped to ``none''.
 .TP
-.BI -s " aname anameup mtpt mtptup rootqidpath"
+.BI -S " aname anameup mtpt mtptup rootqidpath"
 Instead of mounting
 .I styxfile
 for normal files, mount it twice, once with attach specifier
@@ -115,8 +134,7 @@ The root of the exported file system is represented by
 .IR rootqidpath .
 .SH EXAMPLE
 .EX
-portmapper &
-nfssrv <>{export -a /} &
+portmapper && nfssrv <>{export -a /}
 .EE
 .SH SOURCE
 .B /appl/cmd/nfssrv.b

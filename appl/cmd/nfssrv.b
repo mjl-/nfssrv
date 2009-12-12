@@ -4,7 +4,7 @@
 # file handles are 8 bytes, the qid.path of the files.  with paths,
 # we encode the path in the file handle if it fits, otherwise we map
 # it to an 8-byte number we keep track of internally (this makes
-# nfssrv stateless for larger paths in this mode).
+# nfssrv statefull for larger paths in this mode).
 # for fhqidpath, we need two styx fd's: one in which we can open
 # qid.path's, and one in which we can open parents of qid.path's.
 # without fhqidpath we need one styx fd, the one serving all the
@@ -37,7 +37,7 @@ include "tables.m";
 	Table, Strhash: import tables;
 include "util0.m";
 	util: Util0;
-	readfile, writefile, l2a, eq, pid, fail, warn, min, max, hex, index: import util;
+	preadn, readfile, writefile, l2a, eq, pid, warn, min, max, hex, index: import util;
 include "sunrpc.m";
 	sunrpc: Sunrpc;
 	g32, g64, gopaque, p32, p64, popaque, pstr, pboolopaque, Authsys: import sunrpc;
@@ -57,6 +57,10 @@ Nfssrv: module {
 	init:	fn(nil: ref Draw->Context, args: list of string);
 };
 
+# related to max rpc size, in appl/lib/sunrpc.b
+Readmax: con 128*1024;
+Writemax: con 128*1024;
+Readdirpref: con 32*1024;
 
 Dh: adt {
 	fd:	ref Sys->FD;
@@ -92,10 +96,14 @@ Srv: adt {
 	finddirc:	chan of (array of byte, big, int, chan of (ref Dh, ref Attr, int));
 	dirc:		chan of ref Dh;
 	newdirc:	chan of ref Dh;
-	fdopenc:	chan of (array of byte, string, int, chan of (ref Sys->FD, string));
+	fdopenc:	chan of (array of byte, int, chan of (ref Sys->FD, string));
+	fddropc:	chan of array of byte;
 };
 
+cflag: int;
 dflag: int;
+sflag: int;
+Dflag: int;
 
 nfsport := 2049;
 mntport := 39422;
@@ -103,6 +111,7 @@ protocol: string;  # nil is both tcp & udp, otherwise it's the protocol specifie
 regfd: ref Sys->FD;  # global, so we keep a reference until nfssrv dies
 timefd: ref Sys->FD;
 defuser: string;	# fallback user to execute nfs/mnt operations as
+writeverf: big; # id of nfssrv instance
 
 styxfd: ref Sys->FD;
 
@@ -158,11 +167,15 @@ init(nil: ref Draw->Context, args: list of string)
 	nfs = load Nfsrpc Nfsrpc->PATH;
 	nfs->init();
 
+	writeverf = big now();
+
 	arg->init(args);
-	arg->setusage(arg->progname()+" [-d] [-n nfsport] [-m mntport] [-p udp|tcp] [-t passwd group] [-s aname anameup mtpt mtptup rootqidpath] styxfile");
+	arg->setusage(arg->progname()+" [-dDcs] [-n nfsport] [-m mntport] [-p udp|tcp] [-t passwd group] [-S aname anameup mtpt mtptup rootqidpath] styxfile");
 	while((c := arg->opt()) != 0)
 		case c {
+		'c' =>	cflag++;
 		'd' =>	dflag++;
+		'D' =>	Dflag++;
 		'n' =>	nfsport = int arg->earg();
 		'm' =>	mntport = int arg->earg();
 		'p' =>
@@ -173,7 +186,8 @@ init(nil: ref Draw->Context, args: list of string)
 			* =>
 				arg->usage();
 			}
-		's' =>
+		's' =>	sflag++;
+		'S' =>
 			qidpathaname = arg->earg();
 			qidpathanameup = arg->earg();
 			pathstyxmtpt = arg->earg();
@@ -213,7 +227,7 @@ init(nil: ref Draw->Context, args: list of string)
 	if(userfile == nil) {
 		defsrv = startsrv(0, defuser);
 		if(defsrv == nil)
-			failall("starting default srv failed");
+			fail("starting default srv failed");
 	} else
 		uidsrv = uidsrv.new(31, nil);
 
@@ -231,30 +245,38 @@ init(nil: ref Draw->Context, args: list of string)
 
 	regfd = sys->open("/chan/portmapper", Sys->OWRITE);
 	if(regfd == nil)
-		failall(sprint("open /chan/portmapper: %r"));
+		fail(sprint("open /chan/portmapper: %r"));
 	if(protocol != "udp" && sys->fprint(regfd, "add %d %d tcp %d\n", mnt->ProgMnt, mnt->VersMnt, mntport) < 0)
-		failall(sprint("registering mnt tcp: %r"));
+		fail(sprint("registering mnt tcp: %r"));
 	if(protocol != "tcp" && sys->fprint(regfd, "add %d %d udp %d\n", mnt->ProgMnt, mnt->VersMnt, mntport) < 0)
-		failall(sprint("registering mnt udp: %r"));
+		fail(sprint("registering mnt udp: %r"));
 	if(protocol != "udp" && sys->fprint(regfd, "add %d %d tcp %d\n", nfs->ProgNfs, nfs->VersNfs, nfsport) < 0)
-		failall(sprint("registering nfs tcp: %r"));
+		fail(sprint("registering nfs tcp: %r"));
 	if(protocol != "tcp" && sys->fprint(regfd, "add %d %d udp %d\n", nfs->ProgNfs, nfs->VersNfs, nfsport) < 0)
-		failall(sprint("registering nfs udp: %r"));
+		fail(sprint("registering nfs udp: %r"));
 
 	uidc = chan of (int, chan of ref Srv);
 	cleanc = chan of int;
 	fhfindc = chan of (big, chan of ref Fh);
 	fhgetpathc = chan of (string, chan of ref Fh);
 
+	rc := chan of int;
 	if(protocol != "udp") {
-		spawn listen(nfsport, nfssrv);
-		spawn listen(mntport, mntsrv);
+		spawn listen(nfsport, nfssrv, rc);
+		spawn listen(mntport, mntsrv, rc);
+		<-rc;
+		<-rc;
 	}
 	if(protocol != "tcp") {
-		spawn listenudp(nfsport, nfstransact);
-		spawn listenudp(mntport, mnttransact);
+		spawn listenudp(nfsport, nfstransact, rc);
+		spawn listenudp(mntport, mnttransact, rc);
+		<-rc;
+		<-rc;
 	}
-	spawn main();
+	if(sflag)
+		main();
+	else
+		spawn main();
 }
 
 startsrv(uid: int, name: string): ref Srv
@@ -265,9 +287,10 @@ startsrv(uid: int, name: string): ref Srv
 	finddirc := chan of (array of byte, big, int, chan of (ref Dh, ref Attr, int));
 	dirc := chan of ref Dh;
 	newdirc := chan of ref Dh;
-	fdopenc := chan of (array of byte, string, int, chan of (ref Sys->FD, string));
+	fdopenc := chan of (array of byte, int, chan of (ref Sys->FD, string));
+	fddropc := chan[1] of array of byte;
 
-	srv := ref Srv (uid, name, -1, -1, nfsc, mntc, -1, nil, nil, chan of int, finddirc, dirc, newdirc, fdopenc);
+	srv := ref Srv (uid, name, -1, -1, nfsc, mntc, -1, nil, nil, chan of int, finddirc, dirc, newdirc, fdopenc, fddropc);
 
 	spawn startsrv0(srv, okc := chan of int);
 	ok := <-okc;
@@ -288,6 +311,7 @@ startsrv0(srv: ref Srv, okc: chan of int)
 	sys->pctl(Sys->NEWNS, nil);
 	sys->chdir("/");
 	if(fhqidpath) {
+		sys->bind("#U", "/", Sys->MAFTER|Sys->MCREATE);
 		r0 := sys->mount(styxfd, nil, pathstyxmtpt, Sys->MREPL, qidpathaname);
 		if(r0 < 0 || sys->mount(styxfd, nil, pathstyxupmtpt, Sys->MREPL, qidpathanameup) < 0) {
 			warn(sprint("srv, mounts for user %#q: %r", srv.uname));
@@ -314,10 +338,16 @@ srv0(srv: ref Srv, pidc: chan of int)
 	pidc <-= pid();
 	for(;;) alt {
 	(t, rc) := <-srv.mntc =>
-		rc <-= mntexec(t);
+		if(Dflag) say("<- "+t.text());
+		rr := mntexec(t);
+		rc <-= rr;
+		if(Dflag) say("-> "+rr.text());
 
 	(t, rc) := <-srv.nfsc =>
-		rc <-= nfsexec(srv, t);
+		if(Dflag) say("<- "+t.text());
+		rr := nfsexec(srv, t);
+		rc <-= rr;
+		if(Dflag) say("-> "+rr.text());
 	}
 }
 
@@ -415,13 +445,14 @@ readgroup(f: string)
 	}
 }
 
-listen(port: int, srv: ref fn(fd: ref Sys->FD))
+listen(port: int, srv: ref fn(fd: ref Sys->FD), rc: chan of int)
 {
 	addr := sprint("net!*!%d", port);
 	(ok, aconn) := sys->announce(addr);
 	if(ok < 0)
-		failall(sprint("announce %q: %r", addr));
+		fail(sprint("announce %q: %r", addr));
 	say("announced tcp");
+	rc <-= 1;
 	for(;;) {
 		(lok, lconn) := sys->listen(aconn);
 		if(lok < 0) {
@@ -439,7 +470,7 @@ listen(port: int, srv: ref fn(fd: ref Sys->FD))
 	}
 }
 
-listenudp(port: int, transact: ref fn(buf, pre: array of byte, fd: ref Sys->FD): string)
+listenudp(port: int, transact: ref fn(buf, pre: array of byte, fd: ref Sys->FD): string, rc: chan of int)
 {
 	addr := sprint("udp!*!%d", port);
 	(ok, c) := sys->announce(addr);
@@ -451,6 +482,7 @@ listenudp(port: int, transact: ref fn(buf, pre: array of byte, fd: ref Sys->FD):
 	if(fd == nil)
 		fail(sprint("udp data: %r"));
 	say("announced udp");
+	rc <-= 1;
 	buf := array[52+64*1024] of byte;
 	for(;;) {
 		n := sys->read(fd, buf, len buf);
@@ -507,9 +539,15 @@ mnttransact(buf, pre: array of byte, fd: ref Sys->FD): string
 		return "parsing request: "+e;
 	}
 
-	if(tagof tt != tagof Tnfs.Null && as == nil) {
+	if(tagof tt != tagof Tmnt.Null && as == nil) {
 		rbadauth := ref Rrpc.Autherror (tt.r.xid, sunrpc->AUtooweak);
 		return sunrpc->writerpc(fd, pre, pre==nil, rbadauth);
+	}
+	if(tagof tt == tagof Tmnt.Null) {
+		if(Dflag) say("<- "+tt.text());
+		r := mntexec(tt);
+		if(Dflag) say("-> "+r.text());
+		return sunrpc->writerpc(fd, pre, pre==nil, r);
 	}
 
 	srv := defsrv;
@@ -596,6 +634,12 @@ nfstransact(buf, pre: array of byte, fd: ref Sys->FD): string
 		rbadauth := ref Rrpc.Autherror (tt.r.xid, sunrpc->AUtooweak);
 		return sunrpc->writerpc(fd, pre, pre==nil, rbadauth);
 	}
+	if(tagof tt == tagof Tnfs.Null) {
+		if(Dflag) say("<- "+tt.text());
+		r := nfsexec(nil, tt);
+		if(Dflag) say("-> "+r.text());
+		return sunrpc->writerpc(fd, pre, pre==nil, r);
+	}
 
 	srv := defsrv;
 	if(srv == nil) {
@@ -624,7 +668,7 @@ Top:
 
 	Getattr =>
 		rr = r := ref Rnfs.Getattr;
-		(ok, dir) := fhstat(t.fh);
+		(ok, dir) := fhstat(srv, t.fh);
 		if(ok == 0)
 			r.r = ref Rgetattr.Ok (dir2attr(dir));
 		else
@@ -634,39 +678,44 @@ Top:
 		rr = r := ref Rnfs.Setattr;
 		r.weak = nilwd;
 
-		(ok, dir) := fhstat(t.fh);
-		if(ok < 0) {
+		fd := fhopen(srv, t.fh, Sys->OREAD, 1);
+		if(fd == nil || (dir := fdstat(fd)) == nil) {
 			r.status = errno();
 			break;
 		}
+		r.weak = weakdata(ref dir2attr(*dir), 1);
 		if(t.haveguard && dir.mtime != t.guardctime) {
 			r.status = nfs->Enotsync;
 			break;
 		}
 
-		# build the new Dir, starting with all don't cares.
 		# "bad" indicates whether we encountered a request we don't supported.
 		(ndir, bad) := sattr2dir(t.newattr, dir.mode);
-		if(bad)
+		if(bad) {
 			r.status = nfs->Einval;
-		else if(fhwstat(t.fh, ndir) < 0)
+			break;
+		}
+		if(sys->fwstat(fd, ndir) < 0)
 			r.status = errno();
 		else
 			r.status = nfs->Eok;
+		r.weak.after = fhattr(srv, t.fh);
 
 	Lookup =>
 		rr = r := ref Rnfs.Lookup;
 		fh := fhlookup(t.where.fh, t.where.name);
-		if(fh == nil)
-			r.r = ref Rlookup.Fail (errno(), nil);
-		else
-			r.r = ref Rlookup.Ok (fh, fhattr(fh), fhattr(t.where.fh));
+		if(fh == nil) {
+			err := errno();
+			r.r = ref Rlookup.Fail (err, fhattr(srv, t.where.fh));
+		} else
+			r.r = ref Rlookup.Ok (fh, fhattr(srv, fh), fhattr(srv, t.where.fh));
 
 	Access =>
 		rr = r := ref Rnfs.Access;
-		(ok, dir) := fhstat(t.fh);
+		(ok, dir) := fhstat(srv, t.fh);
 		if(ok < 0) {
-			r.r = ref Raccess.Fail (errno(), nil);
+			err := errno();
+			r.r = ref Raccess.Fail (err, nil);
 			break;
 		}
 
@@ -697,22 +746,27 @@ Top:
 
 	Read =>
 		rr = r := ref Rnfs.Read;
-		ffd := fhopen(srv, t.fh, Sys->OREAD, 1);
-		if(ffd == nil || (n := sys->pread(ffd, rbuf := array[min(t.count, Sys->ATOMICIO)] of byte, len rbuf, t.offset)) < 0)
-			r.r = ref Rread.Fail (errno(), nil);
-		else {
-			(ok, dir) := sys->fstat(ffd);
-			if(ok == 0)
-				attr := ref dir2attr(dir);
+		fd := fhopen(srv, t.fh, Sys->OREAD, 1);
+		if(fd == nil || (n := preadn(fd, rbuf := array[min(t.count, Readmax)] of byte, len rbuf, t.offset)) < 0) {
+			err := errno();
+			r.r = ref Rread.Fail (err, fdattr(fd));
+		} else {
+			if(cflag)
+				attr := fdattr(fd);
 			eof := n==0;
 			r.r = ref Rread.Ok (attr, n, eof, rbuf[:n]);
 		}
 
 	Write =>
 		rr = r := ref Rnfs.Write;
-		ffd := fhopen(srv, t.fh, Sys->OWRITE, 1);
-		if(ffd == nil || sys->pwrite(ffd, t.data, len t.data, t.offset) != len t.data) {
-			r.r = ref Rwrite.Fail (errno(), nilwd);
+		fd := fhopen(srv, t.fh, Sys->OWRITE, 1);
+		if(len t.data > Writemax) {
+			r.r = ref Rwrite.Fail (nfs->Einval, weakdata(fdattr(fd), 1));
+			break;
+		}
+		if(fd == nil || sys->pwrite(fd, t.data, len t.data, t.offset) != len t.data) {
+			err := errno();
+			r.r = ref Rwrite.Fail (err, weakdata(fdattr(fd), 1));
 			break;
 		}
 		how := t.stablehow;
@@ -721,15 +775,19 @@ Top:
 			;
 		nfs->WriteDatasync or
 		nfs->WriteFilesync =>
-			if(fhwstat(t.fh, sys->nulldir) < 0) {
-				r.r = ref Rwrite.Fail (errno(), nilwd);
+			if(sys->fwstat(fd, sys->nulldir) < 0) {
+				err := errno();
+				r.r = ref Rwrite.Fail (err, weakdata(fdattr(fd), 0));
 				break Top;
 			}
 			how = nfs->WriteFilesync;
 		* =>
 			raise "missing case";
 		}
-		r.r = ref Rwrite.Ok (nilwd, len t.data, how, verifier(ffd));
+		wd := nilwd;
+		if(cflag)
+			wd.after = fdattr(fd);
+		r.r = ref Rwrite.Ok (wd, len t.data, how, writeverf);
 
 	Create =>
 		rr = r := ref Rnfs.Create;
@@ -752,10 +810,11 @@ Top:
 		fh := fhcreate(t.where.fh, t.where.name, mode, perm);
 		if(fh == nil) {
 			e.status = errno();
+			e.weak = Weakdata(nil, fhattr(srv, t.where.fh));
 			break;
 		}
 		# xxx wstat ?
-		r.r = ref Rchange.Ok (fh, fhattr(fh), nilwd);
+		r.r = ref Rchange.Ok (fh, fhattr(srv, fh), Weakdata(nil, fhattr(srv, t.where.fh)));
 
 	Mkdir =>
 		rr = r := ref Rnfs.Mkdir;
@@ -776,10 +835,10 @@ Top:
 		(ndir, bad) := sattr2dir(t.attr, 0);
 		if(bad)
 			e.status = nfs->Einval;
-		else if(fhwstat(fh, ndir) < 0)
+		else if(fhwstat(srv, fh, ndir) < 0)
 			e.status = errno();
 		else
-			r.r = ref Rchange.Ok (fh, fhattr(fh), nilwd);
+			r.r = ref Rchange.Ok (fh, fhattr(srv, fh), nilwd);
 
 	Symlink =>
 		rr = r := ref Rnfs.Symlink;
@@ -795,6 +854,7 @@ Top:
 		fh := fhlookup(t.where.fh, t.where.name);
 		if(fh != nil)
 			path := fhpath(fh);
+		srv.fddropc <-= fh;
 		if(path == nil || sys->remove(path) < 0)
 			r.status = errno();
 		else
@@ -806,6 +866,7 @@ Top:
 		fh := fhlookup(t.where.fh, t.where.name);
 		if(fh != nil)
 			path := fhpath(fh);
+		srv.fddropc <-= fh;
 		if(path == nil || sys->remove(path) < 0)
 			r.status = errno();
 		else
@@ -823,7 +884,7 @@ Top:
 		ndir := sys->nulldir;
 		ndir.name = t.nwhere.name;
 		fh := fhlookup(t.owhere.fh, t.owhere.name);
-		if(fh == nil || fhwstat(fh, ndir) < 0)
+		if(fh == nil || fhwstat(srv, fh, ndir) < 0)
 			r.status = errno();
 		else
 			r.status = nfs->Eok;
@@ -835,7 +896,7 @@ Top:
 		rr = r := ref Rnfs.Readdir;
 		(dh, attr, status) := dirget(srv, t.fh, t.cookieverf, t.cookie);
 		if(dh == nil) {
-			r.r = ref Rreaddir.Fail (status, nil);
+			r.r = ref Rreaddir.Fail (status, attr);
 			break;
 		}
 
@@ -846,7 +907,7 @@ Top:
 		for(;;) {
 			(ok, ncookie, dir) := dirnext(dh, cookie);
 			if(ok < 0) {
-				r.r = ref Rreaddir.Fail (errno(), nil);
+				r.r = ref Rreaddir.Fail (errno(), attr);
 				dirput(srv, dh);
 				break Top;
 			}
@@ -874,7 +935,7 @@ Top:
 
 		(dh, attr, status) := dirget(srv, t.fh, t.cookieverf, t.cookie);
 		if(dh == nil) {
-			r.r = ref Rreaddirplus.Fail (status, nil);
+			r.r = ref Rreaddirplus.Fail (status, attr);
 			break;
 		}
 
@@ -886,7 +947,7 @@ Top:
 		for(;;) {
 			(ok, ncookie, dir) := dirnext(dh, cookie);
 			if(ok < 0) {
-				r.r = ref Rreaddirplus.Fail (errno(), nil);
+				r.r = ref Rreaddirplus.Fail (errno(), attr);
 				dirput(srv, dh);
 				break Top;
 			}
@@ -919,7 +980,7 @@ Top:
 	Fsstat =>
 		rr = r := ref Rnfs.Fsstat;
 		r.r = e := ref Rfsstat.Ok;
-		e.attr = fhattr(t.rootfh);
+		e.attr = fhattr(srv, t.rootfh);
 		if(e.attr == nil) {
 			r.r = ref Rfsstat.Fail (errno(), nil);
 			break;
@@ -935,26 +996,22 @@ Top:
 	Fsinfo =>
 		rr = r := ref Rnfs.Fsinfo;
 		r.r = e := ref Rfsinfo.Ok;
-		e.attr = fhattr(t.rootfh);
+		e.attr = fhattr(srv, t.rootfh);
 		if(e.attr == nil) {
 			r.r = ref Rfsinfo.Fail (errno(), nil);
 			break;
 		}
-		e.rtmax = Sys->ATOMICIO;
-		e.rtpref = Sys->ATOMICIO;
-		e.rtmult = 8;
-		e.wtmax = Sys->ATOMICIO;
-		e.wtpref = Sys->ATOMICIO;
-		e.wtmult = 8;
-		e.dtpref = 128;
-		e.maxfilesize = big 1<<63;
+		e.rtmax = e.rtpref = e.rtmult = Readmax;
+		e.wtmax = e.wtpref = e.wtmult = Writemax;
+		e.dtpref = Readdirpref;
+		e.maxfilesize = (big 1<<63)-big 1;
 		e.timedelta.secs = 1;
 		e.timedelta.nsecs = 0;
 		e.props = nfs->FSFhomogeneous|nfs->FSFcansettime;
 
 	Pathconf =>
 		rr = r := ref Rnfs.Pathconf;
-		(ok, dir) := fhstat(t.fh);
+		(ok, dir) := fhstat(srv, t.fh);
 		if(ok != 0) {
 			r.r = ref Rpathconf.Fail (errno(), nil);
 			break;
@@ -970,10 +1027,13 @@ Top:
 
 	Commit =>
 		rr = r := ref Rnfs.Commit;
-		if(fhwstat(t.fh, sys->nulldir) < 0)
-			r.r = ref Rcommit.Fail (errno(), nilwd);
+		fd := fhopen(srv, t.fh, Sys->OREAD, 1);
+		ok := fd != nil && sys->fwstat(fd, sys->nulldir) >= 0;
+		wd := weakdata(fdattr(fd), 0);
+		if(ok)
+			r.r = ref Rcommit.Ok (wd, writeverf);
 		else
-			r.r = ref Rcommit.Ok (nilwd, fhverifier(t.fh));
+			r.r = ref Rcommit.Fail (errno(), wd);
 
 	* =>
 		raise "internal error";
@@ -1123,7 +1183,8 @@ loop:
 			raise "not busy?";
 		dh.busy = 0;
 
-	(fh, path, mode, rc) := <-srv.fdopenc =>
+	(fh, mode, rc) := <-srv.fdopenc =>
+		if(dflag) say(sprint("srv.fdopenc lookup, fh %s, mode %#ux", hex(fh), mode));
 		for(l := srv.fdcache; l != nil; l = tl l) {
 			f := hd l;
 			if(f.mode == mode && eq(fh, f.fh)) {
@@ -1133,8 +1194,8 @@ loop:
 			}
 		}
 
-		fd := sys->open(path, mode);
-		if(fd == nil) {
+		path := fhpath(fh);
+		if(path == nil || (fd := sys->open(path, mode)) == nil) {
 			rc <-= (nil, sprint("%r"));
 		} else {
 			rc <-= (fd, nil);
@@ -1145,6 +1206,13 @@ loop:
 				srv.cleanpid = <-pidc;
 			}
 		}
+
+	fh := <-srv.fddropc =>
+		nl: list of ref Fd;
+		for(l := srv.fdcache; l != nil; l = tl l)
+			if(!eq(fh, (hd l).fh))
+				nl = hd l::nl;
+		srv.fdcache = nl;
 	}
 }
 
@@ -1355,34 +1423,48 @@ fhlookupdir(fh: array of byte, dir: Sys->Dir): array of byte
 	return fhlookup(fh, dir.name);
 }
 
-fhstat(fh: array of byte): (int, Sys->Dir)
+fdgetcache(srv: ref Srv, fh: array of byte, mode: int): ref Sys->FD
 {
-	p := fhpath(fh);
-	if(p == nil)
-		return (-1, sys->zerodir);
-	return sys->stat(p);
+	srv.fdopenc <-= (fh, mode, rc := chan[1] of (ref Sys->FD, string));
+	(fd, err) := <-rc;
+	if(err != nil)
+		sys->werrstr(err);
+	return fd;
 }
 
-fhwstat(fh: array of byte, dir: Sys->Dir): int
+fdstat(fd: ref Sys->FD): ref Sys->Dir
 {
-	p := fhpath(fh);
-	if(p == nil)
+	if(fd == nil)
+		return nil;
+	(ok, dir) := sys->fstat(fd);
+	if(ok >= 0)
+		return ref dir;
+	return nil;
+}
+
+fhstat(srv: ref Srv, fh: array of byte): (int, Sys->Dir)
+{
+	fd := fdgetcache(srv, fh, Sys->OREAD);
+	if(fd == nil)
+		return (-1, sys->zerodir);
+	return sys->fstat(fd);
+}
+
+fhwstat(srv: ref Srv, fh: array of byte, dir: Sys->Dir): int
+{
+	fd := fdgetcache(srv, fh, Sys->OREAD);
+	if(fd == nil)
 		return -1;
-	return sys->wstat(p, dir);
+	return sys->fwstat(fd, dir);
 }
 
 fhopen(srv: ref Srv, fh: array of byte, mode: int, usecache: int): ref Sys->FD
 {
+	if(usecache)
+		return fdgetcache(srv, fh, mode);
 	p := fhpath(fh);
 	if(p == nil)
 		return nil;
-	if(usecache) {
-		srv.fdopenc <-= (fh, p, mode, rc := chan of (ref Sys->FD, string));
-		(fd, err) := <-rc;
-		if(err != nil)
-			sys->werrstr(err);
-		return fd;
-	}
 	return sys->open(p, mode);
 }
 
@@ -1406,10 +1488,20 @@ fhcreate(fh: array of byte, name: string, mode, perm: int): array of byte
 	return fhputpath(p);
 }
 
-fhattr(fh: array of byte): ref Attr
+fdattr(fd: ref Sys->FD): ref Attr
 {
-	(ok, dir) := fhstat(fh);
-	if(ok == 0)
+	if(fd == nil)
+		return nil;
+	(ok, dir) := sys->fstat(fd);
+	if(ok >= 0)
+		attr := ref dir2attr(dir);
+	return attr;
+}
+
+fhattr(srv: ref Srv, fh: array of byte): ref Attr
+{
+	(ok, dir) := fhstat(srv, fh);
+	if(ok >= 0)
 		attr := ref dir2attr(dir);
 	return attr;
 }
@@ -1419,20 +1511,12 @@ dir2verifier(dir: Sys->Dir): big
 	return (big dir.qid.vers<<32)|big dir.mtime;
 }
 
-fhverifier(fh: array of byte): big
+weakdata(a: ref Attr, pre: int): Weakdata
 {
-	(ok, dir) := fhstat(fh);
-	if(ok != 0)
-		return big 0;
-	return dir2verifier(dir);
-}
-
-verifier(fd: ref Sys->FD): big
-{
-	(ok, dir) := sys->fstat(fd);
-	if(ok != 0)
-		return big 0;
-	return dir2verifier(dir);
+	w := Weakdata (nil, a);
+	if(pre && a != nil)
+		w.before = ref Weakattr (a.size, a.mtime, a.ctime);
+	return w;
 }
 
 fstypes := array[] of {
@@ -1461,7 +1545,7 @@ dir2attr(dir: Sys->Dir): Attr
 	a.fileid = dir.qid.path;
 	a.atime = dir.atime;
 	a.mtime = a.ctime = dir.mtime;
-if(dflag) say(sprint("dir2attr, type %s, mode %o size %bud", fstypes[a.ftype], a.mode, a.size));
+if(dflag) say(sprint("dir2attr, qid.path %bux, type %s, mode %o size %bud", dir.qid.path, fstypes[a.ftype], a.mode, a.size));
 	return a;
 }
 
@@ -1566,13 +1650,18 @@ killgrp(pid: int)
 	writefile(sprint("#p/%d/ctl", pid), 0, array of byte "killgrp");
 }
 
+lastmsec: int;
 say(s: string)
 {
-	if(dflag)
-		warn(s);
+	if(dflag) {
+		ms := sys->millisec();
+		dms := ms-lastmsec;
+		warn(string dms+" "+s);
+		lastmsec = ms;
+	}
 }
 
-failall(s: string)
+fail(s: string)
 {
 	warn(s);
 	killgrp(pid());

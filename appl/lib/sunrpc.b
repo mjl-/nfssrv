@@ -50,7 +50,7 @@ if(dflag)say("reading Trpc");
 		v := g32(sbuf, 0).t0;
 		end := v&(1<<31);
 		v &= ~end;
-		if(v > 64*1024)
+		if(v > 1024+128*1024) # overhead, plus large nfs read/write
 			return (nil, "message too long");
 		if(end)
 			end = 1;

@@ -115,7 +115,7 @@ Tmnt.unpack(m: ref Trpc, buf: array of byte): ref Tmnt raises (Badrpc, Badprog, 
 tmntnames := array[] of {"Null", "Mnt", "Dump", "Umnt", "Umntall", "Export"};
 Tmnt.text(mm: self ref Tmnt): string
 {
-	s := sprint("Tmnsg.%s(", tmntnames[tagof mm]);
+	s := sprint("Tmnt.%s(", tmntnames[tagof mm]);
 	pick m := mm {
 	Null =>		;
 	Mnt =>		s += sprint("dirpath %q", m.dirpath);

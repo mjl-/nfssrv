@@ -4,7 +4,7 @@ portmapper - port mapper
 .SH synopsis
 .B portmapper
 [
-.B -d
+.B -ds
 ] [
 .B -t
 .I tcpaddr
@@ -26,7 +26,7 @@ Portmapper allows new registrations over the network, on
 .I tcpaddr
 and
 .I udpaddr
-(tcp!*!sunrpc and udp!*!sunrpc by default).
+(``tcp!*!sunrpc'' and ``udp!*!sunrpc'' by default).
 It also allows registrations through the file
 .IR /chan/portmapper .
 RPC servers register by writing one line per registration:
@@ -37,10 +37,21 @@ Where
 and
 .I port
 are numerical.  The registrations remain valid until the file is closed.
+.PP
+Option
+.B -s
+causes portmapper to run in the foreground.  By default it goes
+into the background after claiming tcp/udp ports and
+.IR /chan/portmapper .
+Option
+.B -d
+prints debugging information.
 .SH SOURCE
 .B /appl/cmd/portmapper.b
 .br
 .B /appl/lib/portmaprpc.b
+.br
+.B /appl/lib/portmaprpc.m
 .br
 .B /appl/lib/sunrpc.b
 .SH SEE ALSO

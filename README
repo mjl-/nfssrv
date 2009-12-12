@@ -41,6 +41,6 @@ mechiel lukkien, reachable at mechiel@ueber.net or mechiel@xs4all.nl.
 
 - nfsfs: determine if we need to do some verification (cookies)
 - nfsfs: should we use restricted ports?
+- nfssrv: don't allow creates with createverf?  or implement the verifier-in-metadata dance.
 - nfssrv: implement worker threads and allow responding to messages out of order?
 - nfssrv: rpc message should hold source address (ip, port, proto)
-- nfssrv: see if Weakdata(nil,nil) can be filled in.  other optional data too perhaps.
