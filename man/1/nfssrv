@@ -12,6 +12,9 @@ nfssrv - NFS server, version 3
 ] [
 .B -s
 ] [
+.B -h
+.I host
+] [
 .B -n
 .I nfsport
 ] [
@@ -84,6 +87,11 @@ Print NFS message traces.
 .TP
 .B -s
 Stay in foreground.  By default nfssrv runs in the background after having claimed tcp & udp ports.
+.TP
+.BI -h " host"
+Listen on
+.IR host .
+The default is ``*''.
 .TP
 .BI -n " nfsport"
 Listen on port

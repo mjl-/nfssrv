@@ -56,6 +56,8 @@ init(nil: ref Draw->Context, args: list of string)
 	portmaprpc = load Portmaprpc Portmaprpc->PATH;
 	portmaprpc->init();
 
+	sys->pctl(Sys->NEWPGRP, nil);
+
 	arg->init(args);
 	arg->setusage(arg->progname()+" [-ds] [-t tcpaddr] [-u udpaddr]");
 	while((c := arg->opt()) != 0)

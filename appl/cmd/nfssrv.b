@@ -105,6 +105,7 @@ dflag: int;
 sflag: int;
 Dflag: int;
 
+host := "*";
 nfsport := 2049;
 mntport := 39422;
 protocol: string;  # nil is both tcp & udp, otherwise it's the protocol specified
@@ -170,12 +171,13 @@ init(nil: ref Draw->Context, args: list of string)
 	writeverf = big now();
 
 	arg->init(args);
-	arg->setusage(arg->progname()+" [-dDcs] [-n nfsport] [-m mntport] [-p udp|tcp] [-t passwd group] [-S aname anameup mtpt mtptup rootqidpath] styxfile");
+	arg->setusage(arg->progname()+" [-dDcs] [-h host] [-n nfsport] [-m mntport] [-p udp|tcp] [-t passwd group] [-S aname anameup mtpt mtptup rootqidpath] styxfile");
 	while((c := arg->opt()) != 0)
 		case c {
 		'c' =>	cflag++;
 		'd' =>	dflag++;
 		'D' =>	Dflag++;
+		'h' =>	host = arg->earg();
 		'n' =>	nfsport = int arg->earg();
 		'm' =>	mntport = int arg->earg();
 		'p' =>
@@ -447,7 +449,7 @@ readgroup(f: string)
 
 listen(port: int, srv: ref fn(fd: ref Sys->FD), rc: chan of int)
 {
-	addr := sprint("net!*!%d", port);
+	addr := sprint("net!%s!%d", host, port);
 	(ok, aconn) := sys->announce(addr);
 	if(ok < 0)
 		fail(sprint("announce %q: %r", addr));
@@ -472,7 +474,7 @@ listen(port: int, srv: ref fn(fd: ref Sys->FD), rc: chan of int)
 
 listenudp(port: int, transact: ref fn(buf, pre: array of byte, fd: ref Sys->FD): string, rc: chan of int)
 {
-	addr := sprint("udp!*!%d", port);
+	addr := sprint("udp!%s!%d", host, port);
 	(ok, c) := sys->announce(addr);
 	if(ok < 0)
 		fail(sprint("announce %q: %r", addr));

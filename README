@@ -44,3 +44,4 @@ mechiel lukkien, reachable at mechiel@ueber.net or mechiel@xs4all.nl.
 - nfssrv: don't allow creates with createverf?  or implement the verifier-in-metadata dance.
 - nfssrv: implement worker threads and allow responding to messages out of order?
 - nfssrv: rpc message should hold source address (ip, port, proto)
+- nfssrv: find out why openbsd does lookup for each file in readdirplus.  we already send attributes and file handle.
