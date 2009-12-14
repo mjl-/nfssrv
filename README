@@ -45,4 +45,4 @@ mechiel lukkien, reachable at mechiel@ueber.net or mechiel@xs4all.nl.
 - nfssrv: implement worker threads and allow responding to messages out of order?
 - nfssrv: rpc message should hold source address (ip, port, proto)
 - nfssrv: always put qid.path in file handle?  for non-qidpath-mode, we can verify the file hasn't been renamed.
-- nfssrv: find out why openbsd does lookup for each file in readdirplus.  we already send attributes and file handle.
+- nfssrv: find out why openbsd does lookup for each file in readdirplus.  we already send attributes and file handle.  it seems openbsd gets confused with committed writes as well, rewriting part of the writes with immediate syncing...

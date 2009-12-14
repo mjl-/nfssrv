@@ -168,6 +168,12 @@ init(nil: ref Draw->Context, args: list of string)
 	nfs = load Nfsrpc Nfsrpc->PATH;
 	nfs->init();
 
+	sys->pctl(Sys->NEWPGRP, nil);
+
+	timefd = sys->open("/dev/time", Sys->OREAD);
+	if(timefd == nil)
+		fail(sprint("open /dev/time: %r"));
+
 	writeverf = big now();
 
 	arg->init(args);
@@ -205,17 +211,11 @@ init(nil: ref Draw->Context, args: list of string)
 	if(len args != 1)
 		arg->usage();
 
-	sys->pctl(Sys->NEWPGRP, nil);
-
 	defuserbuf := readfile("/dev/user", -1);
 	if(len defuserbuf == 0)
 		fail(sprint("/dev/user: %r"));
 	defuser = string defuserbuf;
 	say(sprint("defuser: %q", defuser));
-
-	timefd = sys->open("/dev/time", Sys->OREAD);
-	if(timefd == nil)
-		fail(sprint("open /dev/time: %r"));
 
 	f := hd args;
 	styxfd = sys->open(f, Sys->ORDWR);
