@@ -1137,14 +1137,12 @@ loop:
 		srv.dirhandles = dr;
 
 		# clean up fd's with last use >15 seconds ago
-		fdr: list of ref Fd;
+		fr: list of ref Fd;
 		fdold := now()-15;
-		for(fdl := srv.fdcache; fdl != nil; fdl = tl fdl) {
-			fd := hd fdl;
-			if(fd.use >= fdold)
-				fdr = fd::fdr;
-		}
-		srv.fdcache = fdr;
+		for(fl := srv.fdcache; fl != nil; fl = tl fl)
+			if((hd fl).use >= fdold)
+				fr = hd fl::fr;
+		srv.fdcache = fr;
 
 		if(srv.dirhandles == nil && srv.fdcache == nil) {
 			kill(srv.cleanpid);
@@ -1201,7 +1199,9 @@ loop:
 			rc <-= (nil, sprint("%r"));
 		} else {
 			rc <-= (fd, nil);
-			f := ref Fd (fh, mode, fd, now());
+			nfh := array[len fh] of byte;
+			nfh[:] = fh;
+			f := ref Fd (nfh, mode, fd, now());
 			srv.fdcache = f::srv.fdcache;
 			if(srv.cleanpid < 0) {
 				spawn cleaner(srv.cleanc, pidc := chan of int);
